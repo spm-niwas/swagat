@@ -1,0 +1,159 @@
+{
+  "entities": {
+    "AdminRole": {
+      "title": "Admin Role Assignment",
+      "description": "Trusted mapping of Firebase Auth UID to campus administrator privilege.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "minLength": 3, "maxLength": 120 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "name", "createdAt"]
+    },
+    "GuardRole": {
+      "title": "Guard Role Assignment",
+      "description": "Trusted mapping of Firebase Auth UID to main gate security guard privilege.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "minLength": 3, "maxLength": 120 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "gateUnit": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "name", "gateUnit", "createdAt"]
+    },
+    "UserProfile": {
+      "title": "Authenticated User Profile",
+      "description": "Private user account profile linked to Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "minLength": 3, "maxLength": 120 },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "role": { "type": "string", "enum": ["host", "guard", "admin", "superadmin"] },
+        "phone": { "type": "string", "maxLength": 20 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "displayName", "role", "createdAt", "updatedAt"]
+    },
+    "DirectoryEntry": {
+      "title": "Campus Directory Entry",
+      "description": "Protected staff, guard, resident, or admin entry including mobile and PIN credentials.",
+      "type": "object",
+      "properties": {
+        "zone": { "type": "string", "enum": ["SUPERADMIN", "GUARD", "OFFICE", "RESIDENTIAL", "ADMIN"] },
+        "unit": { "type": "string", "maxLength": 100 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "email": { "type": "string", "maxLength": 120 },
+        "uid": { "type": "string", "maxLength": 128 },
+        "phone": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "pin": { "type": "string", "minLength": 4, "maxLength": 4, "pattern": "^[0-9]{4}$" },
+        "pinMustChange": { "type": "boolean" },
+        "pinResetRequested": { "type": "boolean" },
+        "isFamilyMember": { "type": "boolean" },
+        "isPrimaryHost": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["zone", "unit", "name", "phone", "pin", "pinMustChange", "pinResetRequested", "createdAt", "updatedAt"]
+    },
+    "DestinationLabel": {
+      "title": "Public Campus Destination",
+      "description": "Non-PII destination routing label for gate check-in and host selection.",
+      "type": "object",
+      "properties": {
+        "zone": { "type": "string", "enum": ["OFFICE", "RESIDENTIAL"] },
+        "unit": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "hostName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "label": { "type": "string", "minLength": 1, "maxLength": 210 },
+        "hostUid": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["zone", "unit", "hostName", "label", "createdAt"]
+    },
+    "HousingUnit": {
+      "title": "Campus Housing Unit",
+      "description": "Managed residential quarter or flat unit available for tagging hosts.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "createdAt"]
+    },
+    "VisitorRecord": {
+      "title": "Visitor Gate Log",
+      "description": "Visitor entry or pre-approved pass record tracked from gate arrival to checkout.",
+      "type": "object",
+      "properties": {
+        "visitorName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "visitorPhone": { "type": "string", "minLength": 1, "maxLength": 30 },
+        "visitorType": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "zone": { "type": "string", "enum": ["OFFICE", "RESIDENTIAL"] },
+        "destination": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "hostPhone": { "type": "string", "maxLength": 30 },
+        "hostUid": { "type": "string", "maxLength": 128 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "vehicleNumber": { "type": "string", "maxLength": 30 },
+        "passCode": { "type": "string", "minLength": 4, "maxLength": 8 },
+        "status": { "type": "string", "enum": ["PENDING", "PRE_APPROVED", "APPROVED", "DENIED", "CHECKED_OUT"] },
+        "timeLabel": { "type": "string", "minLength": 1, "maxLength": 30 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["visitorName", "visitorPhone", "visitorType", "zone", "destination", "createdByUid", "passCode", "status", "timeLabel", "createdAt", "updatedAt"]
+    },
+    "CampusSettings": {
+      "title": "Campus Settings",
+      "description": "Campus geofence configuration and branding logo.",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "radiusMeters": { "type": "number" },
+        "logoDataUrl": { "type": "string", "maxLength": 500000 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["enabled", "radiusMeters", "logoDataUrl", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/admins/{adminUid}": {
+      "schema": { "$ref": "#/entities/AdminRole" },
+      "description": "Admin role assignment documents keyed by Firebase Auth UID."
+    },
+    "/guards/{guardUid}": {
+      "schema": { "$ref": "#/entities/GuardRole" },
+      "description": "Security guard role assignment documents keyed by Firebase Auth UID."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Authenticated user profile documents."
+    },
+    "/directory/{entryId}": {
+      "schema": { "$ref": "#/entities/DirectoryEntry" },
+      "description": "Protected campus staff, guard, and resident directory entries."
+    },
+    "/destinations/{destId}": {
+      "schema": { "$ref": "#/entities/DestinationLabel" },
+      "description": "Non-PII destination labels for gate check-in."
+    },
+    "/housingUnits/{unitId}": {
+      "schema": { "$ref": "#/entities/HousingUnit" },
+      "description": "Campus housing units available for tagging staff."
+    },
+    "/visitors/{visitorId}": {
+      "schema": { "$ref": "#/entities/VisitorRecord" },
+      "description": "Live visitor gate activity and pre-approved passes."
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/CampusSettings" },
+      "description": "Campus-wide settings such as geofence and branding."
+    }
+  }
+}

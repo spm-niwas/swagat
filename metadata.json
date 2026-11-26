@@ -1,0 +1,6 @@
+{
+  "name": "Swagat — SPM NIWAS Guest Welcome App",
+  "description": "Mobile-first campus gatekeeper, host approval, and visitor pass management application for SPM NIWAS.",
+  "requestFramePermissions": ["camera", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

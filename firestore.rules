@@ -1,0 +1,375 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isSuperAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'director@spmniwas.in';
+    }
+
+    function isAdmin() {
+      return isSuperAdmin() || (
+        isVerifiedUser() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isGuard() {
+      return isVerifiedUser() &&
+        exists(/databases/$(database)/documents/guards/$(request.auth.uid));
+    }
+
+    // Entity Validation Blueprints
+    function isValidAdminRole(data) {
+      return data.keys().hasAll(['uid', 'email', 'name', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'name', 'createdAt']) &&
+        isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 120 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidGuardRole(data) {
+      return data.keys().hasAll(['uid', 'email', 'name', 'gateUnit', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'name', 'gateUnit', 'createdAt']) &&
+        isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 120 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        data.gateUnit is string && data.gateUnit.size() >= 1 && data.gateUnit.size() <= 80 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'role', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'displayName', 'role', 'phone', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 120 &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+        data.role in ['host', 'guard', 'admin', 'superadmin'] &&
+        (!('phone' in data) || (data.phone is string && data.phone.size() <= 20)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidDirectoryEntry(data) {
+      return data.keys().hasAll([
+          'zone', 'unit', 'name', 'phone', 'pin',
+          'pinMustChange', 'pinResetRequested', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'zone', 'unit', 'name', 'email', 'uid', 'phone', 'pin',
+          'pinMustChange', 'pinResetRequested', 'isFamilyMember', 'isPrimaryHost',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.zone in ['SUPERADMIN', 'GUARD', 'OFFICE', 'RESIDENTIAL', 'ADMIN'] &&
+        data.unit is string && data.unit.size() <= 100 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        (!('email' in data) || (data.email is string && data.email.size() <= 120)) &&
+        (!('uid' in data) || (data.uid is string && data.uid.size() <= 128)) &&
+        data.phone is string && data.phone.size() >= 1 && data.phone.size() <= 120 &&
+        data.pin is string && data.pin.size() == 4 && data.pin.matches('^[0-9]{4}$') &&
+        data.pinMustChange is bool &&
+        data.pinResetRequested is bool &&
+        (!('isFamilyMember' in data) || data.isFamilyMember is bool) &&
+        (!('isPrimaryHost' in data) || data.isPrimaryHost is bool) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidDestination(data) {
+      return data.keys().hasAll(['zone', 'unit', 'hostName', 'label', 'createdAt']) &&
+        data.keys().hasOnly(['zone', 'unit', 'hostName', 'label', 'hostUid', 'createdAt']) &&
+        data.zone in ['OFFICE', 'RESIDENTIAL'] &&
+        data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 100 &&
+        data.hostName is string && data.hostName.size() >= 1 && data.hostName.size() <= 100 &&
+        data.label is string && data.label.size() >= 1 && data.label.size() <= 210 &&
+        (!('hostUid' in data) || (data.hostUid is string && data.hostUid.size() <= 128)) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidHousingUnit(data) {
+      return data.keys().hasAll(['name', 'createdAt']) &&
+        data.keys().hasOnly(['name', 'createdAt']) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidVisitor(data) {
+      return data.keys().hasAll([
+          'visitorName', 'visitorPhone', 'visitorType', 'zone',
+          'destination', 'createdByUid', 'passCode', 'status',
+          'timeLabel', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'visitorName', 'visitorPhone', 'visitorType', 'zone',
+          'destination', 'hostPhone', 'hostUid', 'createdByUid',
+          'vehicleNumber', 'passCode', 'status', 'timeLabel',
+          'createdAt', 'updatedAt'
+        ]) &&
+        data.visitorName is string && data.visitorName.size() >= 1 && data.visitorName.size() <= 100 &&
+        data.visitorPhone is string && data.visitorPhone.size() >= 1 && data.visitorPhone.size() <= 30 &&
+        data.visitorType is string && data.visitorType.size() >= 1 && data.visitorType.size() <= 60 &&
+        data.zone in ['OFFICE', 'RESIDENTIAL'] &&
+        data.destination is string && data.destination.size() >= 1 && data.destination.size() <= 200 &&
+        (!('hostPhone' in data) || (data.hostPhone is string && data.hostPhone.size() <= 30)) &&
+        (!('hostUid' in data) || (data.hostUid is string && data.hostUid.size() <= 128)) &&
+        isValidId(data.createdByUid) &&
+        (!('vehicleNumber' in data) || (data.vehicleNumber is string && data.vehicleNumber.size() <= 30)) &&
+        data.passCode is string && data.passCode.size() >= 4 && data.passCode.size() <= 8 &&
+        data.status in ['PENDING', 'PRE_APPROVED', 'APPROVED', 'DENIED', 'CHECKED_OUT'] &&
+        data.timeLabel is string && data.timeLabel.size() >= 1 && data.timeLabel.size() <= 30 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCampusSettings(data) {
+      return data.keys().hasAll(['enabled', 'radiusMeters', 'logoDataUrl', 'updatedAt']) &&
+        data.keys().hasOnly(['enabled', 'lat', 'lng', 'radiusMeters', 'logoDataUrl', 'updatedAt']) &&
+        data.enabled is bool &&
+        (!('lat' in data) || data.lat == null || (data.lat is number && data.lat >= -90 && data.lat <= 90)) &&
+        (!('lng' in data) || data.lng == null || (data.lng is number && data.lng >= -180 && data.lng <= 180)) &&
+        data.radiusMeters is number && data.radiusMeters >= 10 && data.radiusMeters <= 5000 &&
+        data.logoDataUrl is string && data.logoDataUrl.size() <= 500000 &&
+        data.updatedAt is timestamp;
+    }
+
+    // 1. Admins Role Collection
+    match /admins/{adminUid} {
+      allow get: if isValidId(adminUid) && (isOwner(adminUid) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isAdmin() &&
+        isValidId(adminUid) &&
+        isValidAdminRole(incoming()) &&
+        incoming().uid == adminUid &&
+        incoming().createdAt == request.time;
+      allow update: if isAdmin() &&
+        isValidId(adminUid) &&
+        isValidAdminRole(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['email', 'name']);
+      allow delete: if isSuperAdmin() && isValidId(adminUid);
+    }
+
+    // 2. Guards Role Collection
+    match /guards/{guardUid} {
+      allow get: if isValidId(guardUid) && (isOwner(guardUid) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isAdmin() &&
+        isValidId(guardUid) &&
+        isValidGuardRole(incoming()) &&
+        incoming().uid == guardUid &&
+        incoming().createdAt == request.time;
+      allow update: if isAdmin() &&
+        isValidId(guardUid) &&
+        isValidGuardRole(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['email', 'name', 'gateUnit']);
+      allow delete: if isAdmin() && isValidId(guardUid);
+    }
+
+    // 3. User Profiles Collection
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (isOwner(userId) && incoming().role == 'host')
+        );
+      allow update: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isOwner(userId) &&
+            incoming().role == existing().role &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'phone', 'updatedAt'])
+          )
+        );
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    // 4. Directory Collection (Protected PII & PINs)
+    match /directory/{entryId} {
+      allow get: if isValidId(entryId) && (
+        isAdmin() ||
+        (isVerifiedUser() && (
+          existing().uid == request.auth.uid ||
+          existing().email == request.auth.token.email
+        ))
+      );
+      allow list: if isAdmin() || (
+        isVerifiedUser() && (
+          resource.data.uid == request.auth.uid ||
+          resource.data.email == request.auth.token.email
+        )
+      );
+      allow create: if isAdmin() &&
+        isValidId(entryId) &&
+        isValidDirectoryEntry(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() &&
+        isValidId(entryId) &&
+        isValidDirectoryEntry(incoming()) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            (existing().uid == request.auth.uid || existing().email == request.auth.token.email) &&
+            (!('uid' in incoming()) || incoming().uid == request.auth.uid) &&
+            incoming().zone == existing().zone &&
+            incoming().unit == existing().unit &&
+            incoming().name == existing().name &&
+            incoming().phone == existing().phone &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'pin', 'pinMustChange', 'pinResetRequested', 'uid', 'updatedAt'
+            ])
+          )
+        );
+      allow delete: if isAdmin() && isValidId(entryId) && existing().zone != 'SUPERADMIN';
+    }
+
+    // 5. Public Campus Destinations (Non-PII Split Collection)
+    match /destinations/{destId} {
+      allow get: if isValidId(destId) && (
+        isAdmin() ||
+        isGuard() ||
+        (isVerifiedUser() && existing().hostUid == request.auth.uid)
+      );
+      allow list: if isAdmin() ||
+        isGuard() ||
+        (isVerifiedUser() && resource.data.hostUid == request.auth.uid);
+      allow create: if isAdmin() &&
+        isValidId(destId) &&
+        isValidDestination(incoming()) &&
+        incoming().createdAt == request.time;
+      allow update: if isAdmin() &&
+        isValidId(destId) &&
+        isValidDestination(incoming()) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['zone', 'unit', 'hostName', 'label', 'hostUid']);
+      allow delete: if isAdmin() && isValidId(destId);
+    }
+
+    // 6. Housing Units Collection (Non-PII)
+    match /housingUnits/{unitId} {
+      allow get: if isVerifiedUser() && isValidId(unitId);
+      allow list: if isAdmin() || isGuard() || (isVerifiedUser() && resource.data.name is string);
+      allow create: if isAdmin() &&
+        isValidId(unitId) &&
+        isValidHousingUnit(incoming()) &&
+        incoming().createdAt == request.time;
+      allow update: if isAdmin() &&
+        isValidId(unitId) &&
+        isValidHousingUnit(incoming()) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name']);
+      allow delete: if isAdmin() && isValidId(unitId);
+    }
+
+    // 7. Visitors Collection
+    match /visitors/{visitorId} {
+      allow get: if isValidId(visitorId) && (
+        isAdmin() ||
+        isGuard() ||
+        (isVerifiedUser() && (
+          existing().hostUid == request.auth.uid ||
+          existing().createdByUid == request.auth.uid
+        ))
+      );
+      allow list: if isAdmin() ||
+        isGuard() ||
+        (isVerifiedUser() && (
+          resource.data.hostUid == request.auth.uid ||
+          resource.data.createdByUid == request.auth.uid
+        ));
+      allow create: if isVerifiedUser() &&
+        isValidId(visitorId) &&
+        isValidVisitor(incoming()) &&
+        incoming().createdByUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          isGuard() ||
+          incoming().status == 'PRE_APPROVED'
+        );
+      allow update: if isVerifiedUser() &&
+        isValidId(visitorId) &&
+        isValidVisitor(incoming()) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().createdByUid == existing().createdByUid &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isGuard() &&
+            existing().status in ['PENDING', 'PRE_APPROVED', 'APPROVED'] &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          ) ||
+          (
+            (existing().hostUid == request.auth.uid || existing().createdByUid == request.auth.uid) &&
+            existing().status == 'PENDING' &&
+            incoming().status in ['APPROVED', 'DENIED'] &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+      allow delete: if isAdmin() && isValidId(visitorId);
+    }
+
+    // 8. Campus Settings Collection
+    match /settings/{settingId} {
+      allow get: if isVerifiedUser() && isValidId(settingId);
+      allow list: if isAdmin();
+      allow create: if isAdmin() &&
+        isValidId(settingId) &&
+        isValidCampusSettings(incoming()) &&
+        incoming().updatedAt == request.time;
+      allow update: if isAdmin() &&
+        isValidId(settingId) &&
+        isValidCampusSettings(incoming()) &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'enabled', 'lat', 'lng', 'radiusMeters', 'logoDataUrl', 'updatedAt'
+        ]);
+      allow delete: if isSuperAdmin() && isValidId(settingId);
+    }
+  }
+}
