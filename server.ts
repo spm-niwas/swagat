@@ -73,7 +73,6 @@ function createSeedDatabase(): DatabaseSchema {
   const now = Date.now();
   return {
     directory: [
-      { id: 'dir_superadmin_1', zone: 'SUPERADMIN', unit: 'Director Office', name: 'Director SPM NIWAS', email: SUPERADMIN_EMAIL, phone: SUPERADMIN_EMAIL, pin: '0000', pinMustChange: false, pinResetRequested: false },
       { id: 'dir_guard_1', zone: 'GUARD', unit: 'Main Gate', name: 'Ramesh Singh', phone: '9000000001', pin: '1111', pinMustChange: false, pinResetRequested: false },
       { id: 'dir_1', zone: 'OFFICE', unit: 'IT Dept (Floor 2)', name: 'Rahul Sharma', phone: '9876543210', pin: '2222', pinMustChange: false, pinResetRequested: false },
       { id: 'dir_5', zone: 'RESIDENTIAL', unit: 'Flat A-402', name: 'Rahul Sharma', phone: '9876543210', pin: '2222', pinMustChange: false, pinResetRequested: false },
@@ -156,9 +155,9 @@ function loadDatabase(): DatabaseSchema {
       fs.writeFileSync(DB_FILE, JSON.stringify(seed, null, 2), 'utf8');
       return seed;
     }
-    if (!parsed.directory.some((d) => d.zone === 'SUPERADMIN' || d.email?.toLowerCase() === SUPERADMIN_EMAIL)) {
-      parsed.directory.unshift(createSeedDatabase().directory[0]);
-    }
+    parsed.directory = parsed.directory.filter(
+      (d) => d.zone !== 'SUPERADMIN' && (d.email || '').toLowerCase() !== SUPERADMIN_EMAIL
+    );
     if (!Array.isArray(parsed.housingUnits)) {
       const seen = new Set<string>();
       const derived: string[] = [];
@@ -298,14 +297,14 @@ async function startServer() {
     const items = Array.isArray(body.entries) ? body.entries : [req.body as Omit<DirectoryEntry, 'id'>];
     const created: DirectoryEntry[] = [];
     for (const item of items) {
-      if (!item || !item.name || !item.zone || !item.phone) continue;
+      if (!item || item.zone === 'SUPERADMIN' || !item.name || !item.zone || !item.phone) continue;
       const entry: DirectoryEntry = {
         id: `dir_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         zone: item.zone,
         unit: String(item.unit || '').trim(),
         name: String(item.name).trim(),
         email: item.email,
-        phone: item.zone === 'SUPERADMIN' ? String(item.phone) : normalizePhone(String(item.phone)) || String(item.phone),
+        phone: normalizePhone(String(item.phone)) || String(item.phone),
         pin: String(item.pin || Math.floor(1000 + Math.random() * 9000)),
         pinMustChange: Boolean(item.pinMustChange),
         pinResetRequested: Boolean(item.pinResetRequested),
@@ -345,9 +344,14 @@ async function startServer() {
       pinResetRequested?: boolean;
     };
     const cleanPhone = normalizePhone(phone);
+    if (!cleanPhone) {
+      res.status(400).json({ error: 'Valid mobile number required.' });
+      return;
+    }
     let updated = 0;
     dbState.directory = dbState.directory.map((d) => {
-      if (normalizePhone(d.phone) === cleanPhone || d.phone.toLowerCase() === phone.toLowerCase()) {
+      if (d.zone === 'SUPERADMIN') return d;
+      if (normalizePhone(d.phone) === cleanPhone) {
         updated++;
         return {
           ...d,
@@ -369,8 +373,13 @@ async function startServer() {
   app.post('/api/directory/pin-reset-request', (req: Request, res: Response) => {
     const { phone } = req.body as { phone: string };
     const cleanPhone = normalizePhone(phone);
+    if (!cleanPhone) {
+      res.status(400).json({ error: 'Valid mobile number required.' });
+      return;
+    }
     let found = false;
     dbState.directory = dbState.directory.map((d) => {
+      if (d.zone === 'SUPERADMIN') return d;
       if (normalizePhone(d.phone) === cleanPhone) {
         found = true;
         return { ...d, pinResetRequested: true };

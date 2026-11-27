@@ -176,7 +176,19 @@ export const SettingsModal: React.FC<{
           </button>
         </div>
 
-        {session && (
+        {session && session.role === 'superadmin' && (
+          <div className="bg-amber-50/80 border border-amber-200 rounded-2xl p-3.5 space-y-1">
+            <p className="text-xs font-bold text-amber-950 flex items-center gap-1.5">
+              <Crown className="w-3.5 h-3.5 text-amber-600" />
+              <span>Google Account Authentication</span>
+            </p>
+            <p className="text-xs text-amber-900/90 leading-relaxed">
+              Super Admin access is secured exclusively through Google Sign-In ({SUPERADMIN_EMAIL}).
+            </p>
+          </div>
+        )}
+
+        {session && session.role !== 'superadmin' && (
           <form
             onSubmit={handleSubmit}
             className="bg-indigo-50/70 border border-indigo-200 rounded-2xl p-3.5 space-y-2.5"
@@ -369,7 +381,7 @@ export const ForgotPinModal: React.FC<{
   );
 };
 
-/* 5. Super Admin Login Modal */
+/* 5. Super Admin Login Modal (Google/Gmail only: director@spmniwas.in) */
 export const SuperAdminLoginModal: React.FC<{
   open: boolean;
   googleLoading?: boolean;
@@ -378,7 +390,6 @@ export const SuperAdminLoginModal: React.FC<{
   onGoogleLogin: () => Promise<void> | void;
   onSwitchGoogleAccount?: () => Promise<void> | void;
   onClose: () => void;
-  onLogin: (email: string, pin: string) => boolean;
 }> = ({
   open,
   googleLoading = false,
@@ -387,28 +398,12 @@ export const SuperAdminLoginModal: React.FC<{
   onGoogleLogin,
   onSwitchGoogleAccount,
   onClose,
-  onLogin,
 }) => {
-  const [email, setEmail] = useState(SUPERADMIN_EMAIL);
-  const [pin, setPin] = useState('');
-
   if (!open) return null;
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const ok = onLogin(email.trim().toLowerCase(), pin.trim());
-    if (ok) {
-      setPin('');
-      onClose();
-    }
-  };
 
   return (
     <div className="fixed inset-0 bg-slate-900/85 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <form
-        onSubmit={handleSubmit}
-        className="w-full max-w-sm bg-white rounded-3xl p-5 shadow-2xl space-y-3.5"
-      >
+      <div className="w-full max-w-sm bg-white rounded-3xl p-5 shadow-2xl space-y-3.5">
         <div className="flex items-center justify-between">
           <h3 className="font-bold text-slate-900 text-base flex items-center gap-1.5">
             <Crown className="w-4 h-4 text-amber-600" />
@@ -417,13 +412,15 @@ export const SuperAdminLoginModal: React.FC<{
           <button
             type="button"
             onClick={onClose}
+            aria-label="Close Super Admin Login"
             className="p-2 rounded-xl bg-slate-100 text-slate-500"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
-        <p className="text-xs text-slate-500 leading-relaxed">
-          Authorized Director access ({SUPERADMIN_EMAIL}) to appoint or remove Campus Admins.
+        <p className="text-xs text-slate-600 leading-relaxed">
+          Sign in with Google using the authorized Director account{' '}
+          <strong className="text-slate-900">{SUPERADMIN_EMAIL}</strong>.
         </p>
 
         <button
@@ -450,13 +447,7 @@ export const SuperAdminLoginModal: React.FC<{
               d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96Z"
             />
           </svg>
-          <span>
-            {googleLoading
-              ? 'Connecting Google...'
-              : firebaseEmail
-                ? `Google: ${firebaseEmail}`
-                : 'Continue with Google'}
-          </span>
+          <span>{googleLoading ? 'Connecting Google...' : 'Continue with Google'}</span>
         </button>
 
         {authError && (
@@ -471,8 +462,9 @@ export const SuperAdminLoginModal: React.FC<{
         {firebaseEmail && (
           <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-xs text-amber-950 space-y-2">
             <p className="leading-relaxed font-medium">
-              Connected as <span className="font-bold break-all">{firebaseEmail}</span>. Sign in
-              with <span className="font-bold">{SUPERADMIN_EMAIL}</span> for Super Admin access.
+              Connected as <span className="font-bold break-all">{firebaseEmail}</span>. Only{' '}
+              <span className="font-bold">{SUPERADMIN_EMAIL}</span> is permitted for Super Admin
+              access.
             </p>
             {onSwitchGoogleAccount && (
               <button
@@ -488,47 +480,14 @@ export const SuperAdminLoginModal: React.FC<{
           </div>
         )}
 
-        <div className="flex items-center gap-2 py-0.5">
-          <div className="h-px flex-1 bg-slate-200" />
-          <span className="text-[11px] font-semibold text-slate-400">or Director PIN</span>
-          <div className="h-px flex-1 bg-slate-200" />
-        </div>
-
-        <div className="space-y-2.5">
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="Super Admin Email *"
-            className="w-full min-h-[44px] bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          />
-          <input
-            type="tel"
-            inputMode="numeric"
-            maxLength={4}
-            autoComplete="off"
-            value={pin}
-            onChange={(e) => setPin(e.target.value.replace(/[^0-9]/g, '').slice(0, 4))}
-            placeholder="4-Digit PIN"
-            className="pin-mask w-full min-h-[44px] bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-base font-extrabold tracking-[0.45em] text-center text-slate-900 placeholder:text-sm placeholder:font-medium placeholder:tracking-normal focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          />
-        </div>
-        <div className="flex gap-2 pt-1">
-          <button
-            type="submit"
-            className="flex-1 min-h-[44px] bg-indigo-900 hover:bg-indigo-950 text-white font-bold text-xs py-3 rounded-xl shadow"
-          >
-            Access Super Admin
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="min-h-[44px] bg-slate-100 text-slate-700 font-bold text-xs px-4 py-3 rounded-xl"
-          >
-            Cancel
-          </button>
-        </div>
-      </form>
+        <button
+          type="button"
+          onClick={onClose}
+          className="w-full min-h-[42px] bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs py-2.5 rounded-xl transition"
+        >
+          Cancel
+        </button>
+      </div>
     </div>
   );
 };

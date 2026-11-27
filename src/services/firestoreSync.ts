@@ -263,18 +263,6 @@ export async function seedInitialFirestoreIfNeeded(user: User): Promise<void> {
   const batch = writeBatch(db);
   const seedDirectory: Array<{ id: string } & Omit<DirectoryEntry, 'id'>> = [
     {
-      id: 'dir_superadmin_1',
-      zone: 'SUPERADMIN',
-      unit: 'Director Office',
-      name: 'Director SPM NIWAS',
-      email: SUPERADMIN_EMAIL,
-      uid: user.uid,
-      phone: SUPERADMIN_EMAIL,
-      pin: '0000',
-      pinMustChange: false,
-      pinResetRequested: false,
-    },
-    {
       id: 'dir_guard_1',
       zone: 'GUARD',
       unit: 'Main Gate',
@@ -545,7 +533,7 @@ export function subscribeFirestoreCampusState(
               unit: String(data.unit || ''),
               name: String(data.hostName || ''),
               phone: '',
-              pin: '0000',
+              pin: '',
               pinMustChange: false,
               pinResetRequested: false,
             };
@@ -725,11 +713,9 @@ export async function fsCreateDirectoryEntries(
   const created: DirectoryEntry[] = [];
 
   for (const item of entries) {
+    if (item.zone === 'SUPERADMIN') continue;
     const id = makeRecordId('dir');
-    const cleanPhone =
-      item.zone === 'SUPERADMIN'
-        ? String(item.phone).slice(0, 120)
-        : (normalizeIndianMobile(item.phone) || String(item.phone)).slice(0, 120);
+    const cleanPhone = (normalizeIndianMobile(item.phone) || String(item.phone)).slice(0, 120);
     const cleanPin = /^\d{4}$/.test(String(item.pin))
       ? String(item.pin)
       : String(Math.floor(1000 + Math.random() * 9000));
@@ -865,14 +851,16 @@ export async function fsUpdateUserPinByPhone(
   extra: { pinMustChange?: boolean; pinResetRequested?: boolean } = {}
 ): Promise<number> {
   const cleanPhone = normalizeIndianMobile(phone);
+  if (!cleanPhone) return 0;
   try {
     const snap = await getDocs(collection(db, 'directory'));
     const batch = writeBatch(db);
     let updated = 0;
     for (const d of snap.docs) {
       const data = d.data();
+      if (data.zone === 'SUPERADMIN') continue;
       const docPhone = String(data.phone || '');
-      if (normalizeIndianMobile(docPhone) === cleanPhone || docPhone.toLowerCase() === phone.toLowerCase()) {
+      if (normalizeIndianMobile(docPhone) === cleanPhone) {
         updated++;
         batch.update(d.ref, {
           pin,

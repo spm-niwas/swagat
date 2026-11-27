@@ -55,6 +55,8 @@ export interface UserSession {
   email: string;
   role: RoleType;
   allowedUnits: string[];
+  loggedInAt?: number;
+  expiresAt?: number;
 }
 
 export interface GuardGeoState {

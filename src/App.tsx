@@ -66,6 +66,7 @@ import { GuardView } from './components/GuardView';
 import { HostView } from './components/HostView';
 import { AdminView } from './components/AdminView';
 import { SuperAdminView } from './components/SuperAdminView';
+import { BottomLeftRoleSwitcher } from './components/BottomLeftRoleSwitcher';
 import {
   ConfirmActionModal,
   ForcePinModal,
@@ -76,6 +77,16 @@ import {
   ShareCredentialsModal,
   SuperAdminLoginModal,
 } from './components/Modals';
+
+const SESSION_STORAGE_KEY = 'swagat_session_v1';
+const PIN_SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+const isDevConsole =
+  import.meta.env.DEV ||
+  (typeof window !== 'undefined' &&
+    (window.location.hostname.startsWith('ais-dev-') ||
+      window.location.hostname === 'localhost' ||
+      window.location.hostname === '127.0.0.1'));
 
 export default function App() {
   const [visitors, setVisitors] = useState<VisitorRecord[]>([]);
@@ -94,13 +105,22 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
 
   const [isMobile, setIsMobile] = useState<boolean>(() => isMobileDevice());
+  const [devPreviewOverride, setDevPreviewOverride] = useState(false);
   const [session, setSession] = useState<UserSession | null>(() => {
     try {
-      const raw = localStorage.getItem('swagat_session_v1');
+      const raw = localStorage.getItem(SESSION_STORAGE_KEY);
       if (!raw) return null;
       const parsed = JSON.parse(raw) as UserSession;
+      if (parsed.role === 'superadmin') {
+        localStorage.removeItem(SESSION_STORAGE_KEY);
+        return null;
+      }
+      if (typeof parsed.expiresAt !== 'number' || Date.now() >= parsed.expiresAt) {
+        localStorage.removeItem(SESSION_STORAGE_KEY);
+        return null;
+      }
       if ((parsed.role === 'guard' || parsed.role === 'host') && !isMobileDevice()) {
-        localStorage.removeItem('swagat_session_v1');
+        localStorage.removeItem(SESSION_STORAGE_KEY);
         return null;
       }
       return parsed;
@@ -207,6 +227,17 @@ export default function App() {
       setFirebaseUser(user);
 
       if (user) {
+        const googleEmail = (user.email || '').trim().toLowerCase();
+        if (googleEmail !== SUPERADMIN_EMAIL || user.emailVerified === false) {
+          setLoading(false);
+          setSession((prev) => (prev?.role === 'superadmin' ? null : prev));
+          setAuthError(
+            `Access denied for "${googleEmail || 'this Google account'}". Super Admin login is restricted strictly to ${SUPERADMIN_EMAIL}.`
+          );
+          setSuperAdminLoginOpen(true);
+          return;
+        }
+
         setAuthError(null);
         try {
           const resolved = await ensureAndResolveFirebaseUser(user);
@@ -219,35 +250,17 @@ export default function App() {
             if (active) applyServerState(partial);
           });
 
-          // Automatically activate session when authenticated with Google
-          if (resolved.isAdmin || resolved.isGuard || resolved.allowedUnits.length > 0 || resolved.email === SUPERADMIN_EMAIL) {
-            if ((resolved.role === 'guard' || resolved.role === 'host') && !isMobileDevice()) {
-              setLoading(false);
-              setAuthError('Guard and Host portals can only be opened on a mobile device.');
-              return;
-            }
-            setAuthError(null);
-            const cloudSession: UserSession = {
-              name: resolved.name,
-              phone: resolved.phone || resolved.email,
-              email: resolved.email,
-              role: resolved.role,
-              allowedUnits: resolved.allowedUnits,
-            };
-            setSession(cloudSession);
-            setCurrentRole(resolved.role);
-            setSuperAdminLoginOpen(false);
-            try {
-              localStorage.setItem('swagat_session_v1', JSON.stringify(cloudSession));
-            } catch {
-              // ignore
-            }
-          } else {
-            setLoading(false);
-            setAuthError(
-              `Google account "${resolved.email || 'unknown'}" is not authorized for Super Admin access.`
-            );
-          }
+          setDevPreviewOverride(false);
+          const cloudSession: UserSession = {
+            name: resolved.name || 'Director SPM NIWAS',
+            phone: resolved.phone || SUPERADMIN_EMAIL,
+            email: SUPERADMIN_EMAIL,
+            role: 'superadmin',
+            allowedUnits: resolved.allowedUnits,
+          };
+          setSession(cloudSession);
+          setCurrentRole('superadmin');
+          setSuperAdminLoginOpen(false);
         } catch (err) {
           if (active) {
             setLoading(false);
@@ -294,13 +307,50 @@ export default function App() {
         const updated = { ...session, allowedUnits: nextUnits };
         setSession(updated);
         try {
-          localStorage.setItem('swagat_session_v1', JSON.stringify(updated));
+          localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(updated));
         } catch {
           // ignore
         }
       }
     }
   }, [directory, session]);
+
+  // Enforce 1-week expiration for mobile + PIN sessions
+  useEffect(() => {
+    if (!session || session.role === 'superadmin' || devPreviewOverride) return;
+    const expiresAt = session.expiresAt;
+    if (typeof expiresAt !== 'number') return;
+
+    const expireIfNeeded = () => {
+      if (Date.now() < expiresAt) return;
+      setSession(null);
+      knownPendingIdsRef.current = null;
+      try {
+        localStorage.removeItem(SESSION_STORAGE_KEY);
+      } catch {
+        // ignore
+      }
+      showToast('Your 7-day session expired. Please log in again.');
+    };
+
+    const remainingMs = expiresAt - Date.now();
+    if (remainingMs <= 0) {
+      expireIfNeeded();
+      return;
+    }
+
+    const timer = setTimeout(expireIfNeeded, remainingMs);
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === 'visible') expireIfNeeded();
+    };
+    window.addEventListener('focus', expireIfNeeded);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('focus', expireIfNeeded);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+    };
+  }, [session, devPreviewOverride, showToast]);
 
   // Unlock WebAudio on first user gesture when alerts enabled
   useEffect(() => {
@@ -464,10 +514,16 @@ export default function App() {
       return false;
     }
 
+    const cleanInput = identifier.trim().toLowerCase();
+    if (!cleanInput || cleanInput === SUPERADMIN_EMAIL) {
+      showToast(`Super Admin login requires Google Sign-In (${SUPERADMIN_EMAIL}).`);
+      return false;
+    }
+
     const matches = directory.filter((d) => {
-      const idMatch =
-        (d.phone && d.phone.toLowerCase() === identifier.toLowerCase()) ||
-        (d.email && d.email.toLowerCase() === identifier.toLowerCase());
+      if (d.zone === 'SUPERADMIN') return false;
+      if ((d.email || '').toLowerCase() === SUPERADMIN_EMAIL) return false;
+      const idMatch = Boolean(d.phone && d.phone.toLowerCase() === cleanInput);
       return idMatch && d.pin === pin;
     });
 
@@ -492,12 +548,7 @@ export default function App() {
 
     const primary = matches[0];
     let assignedRole: RoleType = 'host';
-    if (
-      identifier.toLowerCase() === SUPERADMIN_EMAIL ||
-      matches.some((m) => m.zone === 'SUPERADMIN')
-    ) {
-      assignedRole = 'superadmin';
-    } else if (matches.some((m) => m.zone === 'ADMIN')) {
+    if (matches.some((m) => m.zone === 'ADMIN')) {
       assignedRole = 'admin';
     } else if (matches.some((m) => m.zone === 'GUARD')) {
       assignedRole = 'guard';
@@ -509,22 +560,26 @@ export default function App() {
       return false;
     }
 
+    setDevPreviewOverride(false);
     const allowedUnits = matches
       .filter((m) => m.zone === 'OFFICE' || m.zone === 'RESIDENTIAL')
       .map(formatDirectoryLabel);
 
+    const now = Date.now();
     const newSession: UserSession = {
       name: primary.name,
       phone: primary.phone,
       email: primary.email || '',
       role: assignedRole,
       allowedUnits,
+      loggedInAt: now,
+      expiresAt: now + PIN_SESSION_DURATION_MS,
     };
 
     setSession(newSession);
     setCurrentRole(assignedRole);
     try {
-      localStorage.setItem('swagat_session_v1', JSON.stringify(newSession));
+      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(newSession));
     } catch {
       // ignore
     }
@@ -586,20 +641,12 @@ export default function App() {
     authenticateIdentifier(phone, pin);
   };
 
-  const handleSuperAdminModalLogin = (email: string, pin: string) => {
-    if (email !== SUPERADMIN_EMAIL) {
-      showToast('Only director@spmniwas.in is authorized for Super Admin.');
-      return false;
-    }
-    if (pin.length !== 4) {
-      showToast('Enter your 4-digit Super Admin PIN.');
-      return false;
-    }
-    return authenticateIdentifier(email, pin);
-  };
-
   const handleSwitchRole = (role: RoleType) => {
-    if ((role === 'guard' || role === 'host') && !isMobileDevice()) {
+    if (
+      (role === 'guard' || role === 'host') &&
+      !isMobileDevice() &&
+      !(isDevConsole && devPreviewOverride)
+    ) {
       showToast('Guard and Host portals can only be opened on a mobile device.');
       return;
     }
@@ -610,12 +657,74 @@ export default function App() {
     setCurrentRole(role);
   };
 
+  const handleDevSelectLogin = () => {
+    if (!isDevConsole) return;
+    setDevPreviewOverride(false);
+    setSession(null);
+    setCurrentRole('guard');
+    try {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleDevSelectRole = (role: RoleType) => {
+    if (!isDevConsole) return;
+    setDevPreviewOverride(true);
+    setCurrentRole(role);
+    if (role === 'guard') {
+      const guardRec = directory.find((d) => d.zone === 'GUARD');
+      setSession({
+        name: guardRec?.name || 'Ramesh Singh',
+        phone: guardRec?.phone || '9000000001',
+        email: '',
+        role: 'guard',
+        allowedUnits: [],
+      });
+    } else if (role === 'host') {
+      const firstHost = directory.find((d) => d.zone === 'OFFICE' || d.zone === 'RESIDENTIAL');
+      const hostPhone = firstHost?.phone || '9876543210';
+      const hostUnits = directory
+        .filter((d) => d.phone === hostPhone && (d.zone === 'OFFICE' || d.zone === 'RESIDENTIAL'))
+        .map(formatDirectoryLabel);
+      setSession({
+        name: firstHost?.name || 'Rahul Sharma',
+        phone: hostPhone,
+        email: '',
+        role: 'host',
+        allowedUnits:
+          hostUnits.length > 0
+            ? hostUnits
+            : ['IT Dept (Floor 2) - Rahul Sharma', 'Flat A-402 - Rahul Sharma'],
+      });
+    } else if (role === 'admin') {
+      const adminRec = directory.find((d) => d.zone === 'ADMIN');
+      setSession({
+        name: adminRec?.name || 'SPM NIWAS Admin',
+        phone: adminRec?.phone || '9999999999',
+        email: '',
+        role: 'admin',
+        allowedUnits: [],
+      });
+    } else {
+      setSession({
+        name: 'Director SPM NIWAS',
+        phone: SUPERADMIN_EMAIL,
+        email: SUPERADMIN_EMAIL,
+        role: 'superadmin',
+        allowedUnits: [],
+      });
+    }
+  };
+
   const handleLogout = () => {
+    setDevPreviewOverride(false);
     setSession(null);
     stopDoorbellLoop();
     knownPendingIdsRef.current = null;
     try {
-      localStorage.removeItem('swagat_session_v1');
+      localStorage.removeItem(SESSION_STORAGE_KEY);
     } catch {
       // ignore
     }
@@ -737,6 +846,7 @@ export default function App() {
   };
 
   const handleResetUserPin = async (entry: DirectoryEntry) => {
+    if (entry.zone === 'SUPERADMIN') return;
     const newTempPin = String(Math.floor(1000 + Math.random() * 9000));
     await saveUpdatePinByPhone(entry.phone, newTempPin, {
       pinMustChange: true,
@@ -746,11 +856,11 @@ export default function App() {
   };
 
   const handleSelfPinChange = async (oldPin: string, newPin: string) => {
-    if (!session) return;
+    if (!session || session.role === 'superadmin') return;
     const validOld = directory.some(
       (d) =>
-        (normalizeIndianMobile(d.phone) === normalizeIndianMobile(session.phone) ||
-          d.phone.toLowerCase() === session.phone.toLowerCase()) &&
+        d.zone !== 'SUPERADMIN' &&
+        normalizeIndianMobile(d.phone) === normalizeIndianMobile(session.phone) &&
         d.pin === oldPin
     );
     if (!validOld) {
@@ -770,7 +880,7 @@ export default function App() {
   };
 
   const handleForcedPinSetup = async (p1: string, p2: string) => {
-    if (!session) return;
+    if (!session || session.role === 'superadmin') return;
     if (p1.length !== 4 || p1 !== p2) {
       showToast('Both PIN fields must match (4 digits).');
       return;
@@ -790,7 +900,9 @@ export default function App() {
     }
     try {
       if (isCloudMode) {
-        const target = directory.find((d) => normalizeIndianMobile(d.phone) === phone);
+        const target = directory.find(
+          (d) => d.zone !== 'SUPERADMIN' && normalizeIndianMobile(d.phone) === phone
+        );
         if (!target) throw new Error('Mobile number not found in SPM NIWAS directory.');
         await fsUpdateDirectoryEntry(target.id, { pinResetRequested: true });
       } else {
@@ -863,7 +975,9 @@ export default function App() {
           />
         ) : (
           <main className="flex-1 overflow-y-auto no-scrollbar p-4 space-y-4 pb-20">
-            {(currentRole === 'guard' || currentRole === 'host') && !isMobile ? (
+            {(currentRole === 'guard' || currentRole === 'host') &&
+            !isMobile &&
+            !(isDevConsole && devPreviewOverride) ? (
               <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200 text-center space-y-4 my-8">
                 <div className="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-700 flex items-center justify-center mx-auto">
                   <Smartphone className="w-7 h-7" />
@@ -1055,7 +1169,6 @@ export default function App() {
         onGoogleLogin={handleGoogleLogin}
         onSwitchGoogleAccount={handleSwitchGoogleAccount}
         onClose={() => setSuperAdminLoginOpen(false)}
-        onLogin={handleSuperAdminModalLogin}
       />
 
       <ConfirmActionModal config={confirmConfig} onClose={() => setConfirmConfig(null)} />
@@ -1080,6 +1193,15 @@ export default function App() {
           }
         }}
       />
+
+      {isDevConsole && (
+        <BottomLeftRoleSwitcher
+          hasSession={Boolean(session)}
+          currentRole={currentRole}
+          onSelectLogin={handleDevSelectLogin}
+          onSelectRole={handleDevSelectRole}
+        />
+      )}
     </div>
   );
 }
