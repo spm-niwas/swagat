@@ -102,12 +102,8 @@ export function getZoneDirectoryLabels(directory: DirectoryEntry[], zone: Access
 export function canHostViewVisitor(
   visitor: VisitorRecord,
   session: UserSession | null,
-  directory: DirectoryEntry[],
-  designStudioMode: boolean
+  directory: DirectoryEntry[]
 ): boolean {
-  if (designStudioMode && (!session || !session.allowedUnits || session.allowedUnits.length === 0)) {
-    return true;
-  }
   if (!session || !session.allowedUnits || session.allowedUnits.length === 0) {
     return false;
   }
@@ -146,14 +142,8 @@ export function isPrimaryHostOfFlat(
 export function resolveHostDestinationForCategory(
   guestType: string,
   session: UserSession | null,
-  directory: DirectoryEntry[],
-  designStudioMode: boolean
+  directory: DirectoryEntry[]
 ): string {
-  if (designStudioMode && (!session || !session.allowedUnits || session.allowedUnits.length === 0)) {
-    return guestType === 'Official Visitor'
-      ? 'IT Dept (Floor 2) - Rahul Sharma'
-      : 'Flat A-402 - Rahul Sharma';
-  }
   const units = session?.allowedUnits ?? [];
   if (units.length === 0) return 'SPM NIWAS';
   if (units.length === 1) return units[0];
@@ -226,4 +216,18 @@ export function playGateDoorbellChime(): void {
   } catch {
     // Ignore WebAudio errors on restricted devices
   }
+}
+
+export function isMobileDevice(): boolean {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+  const nav = navigator as Navigator & { userAgentData?: { mobile?: boolean } };
+  if (nav.userAgentData?.mobile === true) return true;
+  const ua = navigator.userAgent || '';
+  if (/Android|webOS|iPhone|iPod|BlackBerry|IEMobile|Opera Mini|Windows Phone/i.test(ua)) {
+    return true;
+  }
+  const hasCoarsePointer =
+    typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+  const isNarrowScreen = window.innerWidth <= 768;
+  return hasCoarsePointer && navigator.maxTouchPoints > 0 && isNarrowScreen;
 }

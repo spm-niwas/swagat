@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { onAuthStateChanged, type User } from 'firebase/auth';
+import { Smartphone } from 'lucide-react';
 import { auth } from './firebase';
 import type {
   AppStatePayload,
@@ -18,6 +19,7 @@ import {
   displayIndianMobile,
   formatDirectoryLabel,
   haversineMeters,
+  isMobileDevice,
   normalizeIndianMobile,
   playGateDoorbellChime,
   SUPERADMIN_EMAIL,
@@ -40,7 +42,9 @@ import {
   updateVisitorStatusApi,
 } from './services/api';
 import {
+  checkGoogleRedirectResult,
   ensureAndResolveFirebaseUser,
+  formatFirebaseAuthError,
   fsAddHousingUnits,
   fsCreateDirectoryEntries,
   fsCreateVisitor,
@@ -62,7 +66,6 @@ import { GuardView } from './components/GuardView';
 import { HostView } from './components/HostView';
 import { AdminView } from './components/AdminView';
 import { SuperAdminView } from './components/SuperAdminView';
-import { BottomLeftRoleSwitcher } from './components/BottomLeftRoleSwitcher';
 import {
   ConfirmActionModal,
   ForcePinModal,
@@ -88,18 +91,34 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [googleLoading, setGoogleLoading] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
 
+  const [isMobile, setIsMobile] = useState<boolean>(() => isMobileDevice());
   const [session, setSession] = useState<UserSession | null>(() => {
     try {
       const raw = localStorage.getItem('swagat_session_v1');
-      return raw ? (JSON.parse(raw) as UserSession) : null;
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as UserSession;
+      if ((parsed.role === 'guard' || parsed.role === 'host') && !isMobileDevice()) {
+        localStorage.removeItem('swagat_session_v1');
+        return null;
+      }
+      return parsed;
     } catch {
       return null;
     }
   });
   const [currentRole, setCurrentRole] = useState<RoleType>(() => session?.role || 'guard');
-  const [demoBarEnabled, setDemoBarEnabled] = useState(false);
-  const [designStudioMode, setDesignStudioMode] = useState(false);
+
+  useEffect(() => {
+    const syncDevice = () => setIsMobile(isMobileDevice());
+    window.addEventListener('resize', syncDevice);
+    window.addEventListener('orientationchange', syncDevice);
+    return () => {
+      window.removeEventListener('resize', syncDevice);
+      window.removeEventListener('orientationchange', syncDevice);
+    };
+  }, []);
 
   // Security / Lockout state
   const [failedAttempts, setFailedAttempts] = useState(0);
@@ -173,12 +192,22 @@ export default function App() {
       }
     };
 
+    checkGoogleRedirectResult().catch((err) => {
+      if (active) {
+        const msg = formatFirebaseAuthError(err);
+        setAuthError(msg);
+        setSuperAdminLoginOpen(true);
+        showToast(msg);
+      }
+    });
+
     const authUnsub = onAuthStateChanged(auth, async (user) => {
       if (!active) return;
       cleanupSubs();
       setFirebaseUser(user);
 
       if (user) {
+        setAuthError(null);
         try {
           const resolved = await ensureAndResolveFirebaseUser(user);
           if (!active) return;
@@ -192,6 +221,12 @@ export default function App() {
 
           // Automatically activate session when authenticated with Google
           if (resolved.isAdmin || resolved.isGuard || resolved.allowedUnits.length > 0 || resolved.email === SUPERADMIN_EMAIL) {
+            if ((resolved.role === 'guard' || resolved.role === 'host') && !isMobileDevice()) {
+              setLoading(false);
+              setAuthError('Guard and Host portals can only be opened on a mobile device.');
+              return;
+            }
+            setAuthError(null);
             const cloudSession: UserSession = {
               name: resolved.name,
               phone: resolved.phone || resolved.email,
@@ -201,30 +236,38 @@ export default function App() {
             };
             setSession(cloudSession);
             setCurrentRole(resolved.role);
+            setSuperAdminLoginOpen(false);
             try {
               localStorage.setItem('swagat_session_v1', JSON.stringify(cloudSession));
             } catch {
               // ignore
             }
+          } else {
+            setLoading(false);
+            setAuthError(
+              `Google account "${resolved.email || 'unknown'}" is not authorized for Super Admin access.`
+            );
           }
         } catch (err) {
           if (active) {
             setLoading(false);
-            showToast(err instanceof Error ? err.message : 'Could not connect to Firestore.');
+            const msg = formatFirebaseAuthError(err);
+            setAuthError(msg);
+            showToast(msg);
           }
         }
       } else {
         fetchAppState()
           .then((data) => {
-            if (active) applyServerState(data);
+            if (!active) return;
+            applyServerState(data);
+            sseUnsub = subscribeToAppEvents((evtData) => {
+              if (active) applyServerState(evtData);
+            });
           })
           .catch(() => {
             if (active) setLoading(false);
           });
-
-        sseUnsub = subscribeToAppEvents((data) => {
-          if (active) applyServerState(data);
-        });
       }
     });
 
@@ -285,7 +328,7 @@ export default function App() {
     let rings = 1;
     doorbellTimerRef.current = setInterval(() => {
       const stillPending = visitors.some(
-        (v) => v.status === 'PENDING' && canHostViewVisitor(v, session, directory, designStudioMode)
+        (v) => v.status === 'PENDING' && canHostViewVisitor(v, session, directory)
       );
       if (!stillPending || rings >= 5) {
         stopDoorbellLoop();
@@ -294,7 +337,7 @@ export default function App() {
       rings++;
       playGateDoorbellChime();
     }, 3500);
-  }, [visitors, session, directory, designStudioMode, stopDoorbellLoop]);
+  }, [visitors, session, directory, stopDoorbellLoop]);
 
   useEffect(() => {
     return () => stopDoorbellLoop();
@@ -304,7 +347,7 @@ export default function App() {
   useEffect(() => {
     if (!session || (session.role !== 'host' && currentRole !== 'host')) return;
     const pendingForHost = visitors.filter(
-      (v) => v.status === 'PENDING' && canHostViewVisitor(v, session, directory, designStudioMode)
+      (v) => v.status === 'PENDING' && canHostViewVisitor(v, session, directory)
     );
     const currentIds = new Set(pendingForHost.map((v) => v.id));
 
@@ -344,7 +387,6 @@ export default function App() {
     session,
     currentRole,
     directory,
-    designStudioMode,
     hostAlertsEnabled,
     startDoorbellLoop,
     stopDoorbellLoop,
@@ -356,10 +398,6 @@ export default function App() {
     (manual = false) => {
       if (!geofence.enabled || geofence.lat === null || geofence.lng === null) return;
       if (session && session.role !== 'guard') return;
-      if (designStudioMode) {
-        guardGeoRef.current.status = 'INSIDE';
-        return;
-      }
       if (!navigator.geolocation) {
         guardGeoRef.current.status = 'DENIED';
         if (manual) setGpsPopup({ open: true, reason: 'DENIED', distanceMeters: null });
@@ -392,7 +430,7 @@ export default function App() {
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 15000 }
       );
     },
-    [geofence, session, designStudioMode, showToast]
+    [geofence, session, showToast]
   );
 
   useEffect(() => {
@@ -465,6 +503,12 @@ export default function App() {
       assignedRole = 'guard';
     }
 
+    if ((assignedRole === 'guard' || assignedRole === 'host') && !isMobileDevice()) {
+      setAttemptHint('Mobile device required for Guard & Host');
+      showToast('Guard and Host portals can only be opened on a mobile device.');
+      return false;
+    }
+
     const allowedUnits = matches
       .filter((m) => m.zone === 'OFFICE' || m.zone === 'RESIDENTIAL')
       .map(formatDirectoryLabel);
@@ -479,7 +523,6 @@ export default function App() {
 
     setSession(newSession);
     setCurrentRole(assignedRole);
-    setDesignStudioMode(false);
     try {
       localStorage.setItem('swagat_session_v1', JSON.stringify(newSession));
     } catch {
@@ -495,12 +538,37 @@ export default function App() {
   };
 
   const handleGoogleLogin = async () => {
+    setAuthError(null);
     setGoogleLoading(true);
     try {
       const user = await signInWithGoogleFirebase();
-      showToast(`Signed in as ${user.email || user.displayName || 'Google User'}`);
+      if (user) {
+        showToast(`Signed in as ${user.email || user.displayName || 'Google User'}`);
+      } else {
+        showToast('Redirecting to Google Sign-In...');
+      }
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Google Sign-In cancelled.');
+      const msg = formatFirebaseAuthError(err);
+      setAuthError(msg);
+      showToast(msg);
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
+
+  const handleSwitchGoogleAccount = async () => {
+    setAuthError(null);
+    setGoogleLoading(true);
+    try {
+      await signOutFirebase();
+      const user = await signInWithGoogleFirebase();
+      if (user) {
+        showToast(`Signed in as ${user.email || user.displayName || 'Google User'}`);
+      }
+    } catch (err) {
+      const msg = formatFirebaseAuthError(err);
+      setAuthError(msg);
+      showToast(msg);
     } finally {
       setGoogleLoading(false);
     }
@@ -512,7 +580,7 @@ export default function App() {
       return;
     }
     if (!firebaseUser && directory.length === 0) {
-      showToast('Please tap Continue with Google first to connect to Swagat Cloud.');
+      showToast('Swagat Cloud is not synced yet. Use Super Admin Login (Google) first on this device.');
       return;
     }
     authenticateIdentifier(phone, pin);
@@ -531,69 +599,19 @@ export default function App() {
   };
 
   const handleSwitchRole = (role: RoleType) => {
-    if (session && !designStudioMode) {
+    if ((role === 'guard' || role === 'host') && !isMobileDevice()) {
+      showToast('Guard and Host portals can only be opened on a mobile device.');
+      return;
+    }
+    if (session) {
       if (session.role === 'guard' && role !== 'guard') return;
       if (session.role === 'host' && role !== 'host') return;
     }
     setCurrentRole(role);
   };
 
-  const handleDesignSelectLogin = () => {
-    setDesignStudioMode(false);
-    setSession(null);
-    setDemoBarEnabled(false);
-    try {
-      localStorage.removeItem('swagat_session_v1');
-    } catch {
-      // ignore
-    }
-    showToast('Switched to Login view');
-  };
-
-  const handleDesignSelectRole = (role: RoleType) => {
-    setDesignStudioMode(false);
-    const zoneMatch =
-      role === 'superadmin'
-        ? 'SUPERADMIN'
-        : role === 'admin'
-          ? 'ADMIN'
-          : role === 'guard'
-            ? 'GUARD'
-            : 'OFFICE';
-    const sample =
-      directory.find((d) => d.zone === zoneMatch) ||
-      directory[0];
-    if (sample) {
-      const matches = directory.filter(
-        (d) =>
-          (d.phone && d.phone.toLowerCase() === sample.phone.toLowerCase()) ||
-          (sample.email && d.email && d.email.toLowerCase() === sample.email.toLowerCase())
-      );
-      const allowedUnits = matches
-        .filter((m) => m.zone === 'OFFICE' || m.zone === 'RESIDENTIAL')
-        .map(formatDirectoryLabel);
-      const previewSession: UserSession = {
-        name: sample.name,
-        phone: sample.phone,
-        email: sample.email || '',
-        role,
-        allowedUnits,
-      };
-      setSession(previewSession);
-      try {
-        localStorage.setItem('swagat_session_v1', JSON.stringify(previewSession));
-      } catch {
-        // ignore
-      }
-    }
-    setCurrentRole(role);
-    showToast(`Switched to ${role === 'superadmin' ? 'Super Admin' : role.charAt(0).toUpperCase() + role.slice(1)} view`);
-  };
-
   const handleLogout = () => {
     setSession(null);
-    setDemoBarEnabled(false);
-    setDesignStudioMode(false);
     stopDoorbellLoop();
     knownPendingIdsRef.current = null;
     try {
@@ -807,16 +825,9 @@ export default function App() {
     showToast(`Tagged ${hostRec.name} to ${unit}`);
   };
 
-  const hasPendingHostApprovals = visitors.some(
-    (v) => v.status === 'PENDING' && canHostViewVisitor(v, session, directory, designStudioMode)
-  );
-
-  // Outer shell class adapts cleanly between mobile-first view, desktop Admin dashboard, and Design Studio board
-  const shellClass = designStudioMode
-    ? 'w-full max-w-[1720px] min-h-[100dvh] bg-slate-200/90 sm:rounded-[1.75rem] sm:shadow-2xl sm:border-[5px] sm:border-slate-800 flex flex-col overflow-hidden relative transition-all duration-300'
-    : session && (currentRole === 'admin' || currentRole === 'superadmin')
-      ? 'w-full sm:max-w-[430px] lg:max-w-6xl h-[100dvh] sm:h-[850px] lg:h-[90vh] bg-slate-50 sm:rounded-[2rem] sm:shadow-2xl sm:border-[6px] sm:border-slate-800 flex flex-col overflow-hidden relative transition-all duration-300'
-      : 'w-full sm:max-w-[430px] lg:max-w-xl h-[100dvh] sm:h-[850px] lg:h-[90vh] bg-slate-50 sm:rounded-[2.5rem] sm:shadow-2xl sm:border-[6px] sm:border-slate-800 flex flex-col overflow-hidden relative transition-all duration-300';
+  // Pure mobile shell
+  const shellClass =
+    'w-full sm:max-w-[430px] h-[100dvh] sm:h-[850px] bg-slate-50 sm:rounded-[2.5rem] sm:shadow-2xl sm:border-[6px] sm:border-slate-800 flex flex-col overflow-hidden relative';
 
   return (
     <div className="bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900 text-slate-900 min-h-screen flex flex-col items-center justify-center sm:p-4">
@@ -826,11 +837,7 @@ export default function App() {
           currentRole={currentRole}
           directory={directory}
           logoDataUrl={logoDataUrl}
-          designStudioMode={designStudioMode}
-          demoBarEnabled={demoBarEnabled}
-          hasPendingHostApprovals={hasPendingHostApprovals}
           onSwitchRole={handleSwitchRole}
-          onExitDesignStudio={() => setDesignStudioMode(false)}
           onOpenSettings={() => setSettingsOpen(true)}
           onRequestLogout={() =>
             setConfirmConfig({
@@ -846,224 +853,106 @@ export default function App() {
           <div className="flex-1 flex items-center justify-center bg-slate-50 p-6">
             <p className="text-sm font-semibold text-slate-500">Connecting to SPM NIWAS...</p>
           </div>
-        ) : designStudioMode ? (
-          <main className="flex-1 overflow-y-auto p-4 flex flex-wrap justify-center gap-5 items-start pb-24">
-            <div className="w-full max-w-[395px] shrink-0 rounded-[2rem] overflow-hidden border-[4px] border-slate-800 shadow-xl bg-white flex flex-col">
-              <div className="bg-indigo-950 text-amber-300 text-xs font-bold uppercase tracking-wider px-4 py-2.5 flex items-center justify-between">
-                <span>1. Welcome & Login</span>
-                <span className="text-[11px] text-indigo-300">Mobile</span>
-              </div>
-              <LoginView
-                logoDataUrl={logoDataUrl}
-                attemptHint={attemptHint}
-                googleLoading={googleLoading}
-                firebaseEmail={firebaseUser?.email || null}
-                onGoogleLogin={handleGoogleLogin}
-                onPinLogin={handlePinLogin}
-                onOpenForgotPin={() => setForgotPinOpen(true)}
-                onOpenSuperAdminLogin={() => setSuperAdminLoginOpen(true)}
-              />
-            </div>
-
-            <div className="w-full max-w-[395px] shrink-0 bg-slate-50 p-3.5 rounded-[2rem] border-[4px] border-slate-800 shadow-xl space-y-3">
-              <div className="bg-slate-900 text-white text-xs font-bold uppercase tracking-wider px-3.5 py-2.5 rounded-2xl">
-                2. Guard Gate Console
-              </div>
-              <GuardView
-                visitors={visitors}
-                directory={directory}
-                onEnforceGeofence={enforceGuardGeofence}
-                onCreateVisitor={async (rec) => {
-                  await createVisitor(rec);
-                }}
-                onUpdateVisitorStatus={async (id, st) => {
-                  await updateVisitorStatusApi(id, st);
-                  showToast('Status updated');
-                }}
-                onOpenPassModal={setActivePassVisitor}
-                onShowToast={showToast}
-              />
-            </div>
-
-            <div className="w-full max-w-[395px] shrink-0 bg-slate-50 p-3.5 rounded-[2rem] border-[4px] border-slate-800 shadow-xl space-y-3">
-              <div className="bg-slate-900 text-white text-xs font-bold uppercase tracking-wider px-3.5 py-2.5 rounded-2xl">
-                3. Host (Resident / Staff)
-              </div>
-              <HostView
-                session={session}
-                visitors={visitors}
-                directory={directory}
-                logoDataUrl={logoDataUrl}
-                designStudioMode={designStudioMode}
-                hostAlertsEnabled={hostAlertsEnabled}
-                onEnableHostAlerts={handleEnableHostAlerts}
-                onRefreshVisitors={async () => {
-                  const data = await fetchAppState();
-                  applyServerState(data);
-                  showToast('Synced latest Main Gate requests.');
-                }}
-                onCreateVisitor={async (rec) => {
-                  await createVisitor(rec);
-                }}
-                onUpdateVisitorStatus={async (id, st) => {
-                  await updateVisitorStatusApi(id, st);
-                  showToast(st === 'APPROVED' ? 'Entry Approved!' : 'Status updated');
-                }}
-                onAddFamilyMember={async (entry) => {
-                  await createDirectoryEntriesApi([entry]);
-                }}
-                onDeleteDirectoryEntry={async (id) => {
-                  await deleteDirectoryEntryApi(id);
-                  showToast('Directory entry removed.');
-                }}
-                onShareCredentials={handleShareCredentials}
-                onResetUserPin={handleResetUserPin}
-                onRequestConfirm={setConfirmConfig}
-                onShowToast={showToast}
-              />
-            </div>
-
-            <div className="w-full max-w-[395px] shrink-0 bg-slate-50 p-3.5 rounded-[2rem] border-[4px] border-slate-800 shadow-xl space-y-3">
-              <div className="bg-slate-900 text-white text-xs font-bold uppercase tracking-wider px-3.5 py-2.5 rounded-2xl">
-                4. Admin Dashboard
-              </div>
-              <AdminView
-                session={session}
-                visitors={visitors}
-                directory={directory}
-                housingUnits={housingUnits}
-                designStudioMode={designStudioMode}
-                onOpenPersonalHostView={() => handleSwitchRole('host')}
-                onAddDirectoryEntries={async (entries) => {
-                  const resUnits = entries
-                    .filter((e) => e.zone === 'RESIDENTIAL' && e.unit.trim())
-                    .map((e) => e.unit.trim())
-                    .join(', ');
-                  if (resUnits) await saveAddHousingUnits(resUnits);
-                  await saveCreateDirectoryEntries(entries);
-                }}
-                onAddHousingUnits={saveAddHousingUnits}
-                onDeleteHousingUnit={async (unit) => {
-                  await saveDeleteHousingUnit(unit);
-                  showToast(`Removed ${unit} from Housing Units.`);
-                }}
-                onTagHostToHousingUnit={handleTagHostToHousingUnit}
-                onResetUserPin={handleResetUserPin}
-                onDeleteDirectoryEntry={async (id) => {
-                  await saveDeleteDirectoryEntry(id);
-                  showToast('Directory entry removed.');
-                }}
-                onDeleteEmployeeByPhone={async (phone) => {
-                  await saveDeleteDirectoryByPhone(phone);
-                  showToast('User deleted from directory.');
-                }}
-                onShareCredentials={handleShareCredentials}
-                onRequestConfirm={setConfirmConfig}
-                onShowToast={showToast}
-              />
-            </div>
-
-            <div className="w-full max-w-[395px] shrink-0 bg-slate-50 p-3.5 rounded-[2rem] border-[4px] border-slate-800 shadow-xl space-y-3">
-              <div className="bg-slate-900 text-white text-xs font-bold uppercase tracking-wider px-3.5 py-2.5 rounded-2xl">
-                5. Super Admin
-              </div>
-              <SuperAdminView
-                directory={directory}
-                logoDataUrl={logoDataUrl}
-                geofence={geofence}
-                designStudioMode={designStudioMode}
-                onAddAdmin={async (entry) => {
-                  await saveCreateDirectoryEntries([entry]);
-                }}
-                onUpdateAdmin={async (id, name, phone) => {
-                  await saveUpdateDirectoryEntry(id, { name, phone });
-                }}
-                onDeleteAdmin={async (id) => {
-                  await saveDeleteDirectoryEntry(id);
-                  showToast('Approved Admin removed.');
-                }}
-                onResetUserPin={handleResetUserPin}
-                onShareCredentials={handleShareCredentials}
-                onUpdateLogo={saveUpdateLogo}
-                onUpdateGeofence={saveUpdateGeofence}
-                onToggleDesignStudio={() => setDesignStudioMode((prev) => !prev)}
-                onRequestConfirm={setConfirmConfig}
-                onShowToast={showToast}
-              />
-            </div>
-          </main>
         ) : !session ? (
           <LoginView
             logoDataUrl={logoDataUrl}
             attemptHint={attemptHint}
-            googleLoading={googleLoading}
-            firebaseEmail={firebaseUser?.email || null}
-            onGoogleLogin={handleGoogleLogin}
             onPinLogin={handlePinLogin}
             onOpenForgotPin={() => setForgotPinOpen(true)}
             onOpenSuperAdminLogin={() => setSuperAdminLoginOpen(true)}
           />
         ) : (
           <main className="flex-1 overflow-y-auto no-scrollbar p-4 space-y-4 pb-20">
-            {currentRole === 'guard' && (
-              <GuardView
-                visitors={visitors}
-                directory={directory}
-                onEnforceGeofence={enforceGuardGeofence}
-                onCreateVisitor={async (rec) => {
-                  await saveCreateVisitor(rec);
-                }}
-                onUpdateVisitorStatus={async (id, st) => {
-                  await saveUpdateVisitorStatus(id, st);
-                  const labels: Record<VisitorStatus, string> = {
-                    PENDING: 'Pending approval',
-                    PRE_APPROVED: 'Pre-approved',
-                    APPROVED: 'Entry Approved!',
-                    DENIED: 'Entry Denied.',
-                    CHECKED_OUT: 'Visitor Checked Out.',
-                  };
-                  showToast(labels[st]);
-                }}
-                onOpenPassModal={setActivePassVisitor}
-                onShowToast={showToast}
-              />
-            )}
+            {(currentRole === 'guard' || currentRole === 'host') && !isMobile ? (
+              <div className="bg-white rounded-3xl p-6 shadow-sm border border-slate-200 text-center space-y-4 my-8">
+                <div className="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-700 flex items-center justify-center mx-auto">
+                  <Smartphone className="w-7 h-7" />
+                </div>
+                <div className="space-y-1.5">
+                  <h2 className="text-lg font-bold text-slate-900">Mobile Device Required</h2>
+                  <p className="text-xs text-slate-600 leading-relaxed">
+                    {currentRole === 'guard' ? 'Guard Gate Console' : 'Host Portal'} can only be
+                    opened on a mobile phone. Please open Swagat on your mobile device.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (session.role === 'admin' || session.role === 'superadmin') {
+                      setCurrentRole(session.role);
+                    } else {
+                      handleLogout();
+                    }
+                  }}
+                  className="w-full min-h-[44px] bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs py-3 rounded-xl transition"
+                >
+                  {session.role === 'admin' || session.role === 'superadmin'
+                    ? 'Back to Admin Dashboard'
+                    : 'Return to Login'}
+                </button>
+              </div>
+            ) : (
+              <>
+                {currentRole === 'guard' && (
+                  <GuardView
+                    visitors={visitors}
+                    directory={directory}
+                    onEnforceGeofence={enforceGuardGeofence}
+                    onCreateVisitor={async (rec) => {
+                      await saveCreateVisitor(rec);
+                    }}
+                    onUpdateVisitorStatus={async (id, st) => {
+                      await saveUpdateVisitorStatus(id, st);
+                      const labels: Record<VisitorStatus, string> = {
+                        PENDING: 'Pending approval',
+                        PRE_APPROVED: 'Pre-approved',
+                        APPROVED: 'Entry Approved!',
+                        DENIED: 'Entry Denied.',
+                        CHECKED_OUT: 'Visitor Checked Out.',
+                      };
+                      showToast(labels[st]);
+                    }}
+                    onOpenPassModal={setActivePassVisitor}
+                    onShowToast={showToast}
+                  />
+                )}
 
-            {currentRole === 'host' && (
-              <HostView
-                session={session}
-                visitors={visitors}
-                directory={directory}
-                logoDataUrl={logoDataUrl}
-                designStudioMode={designStudioMode}
-                hostAlertsEnabled={hostAlertsEnabled}
-                onEnableHostAlerts={handleEnableHostAlerts}
-                onRefreshVisitors={async () => {
-                  if (!isCloudMode) {
-                    const data = await fetchAppState();
-                    applyServerState(data);
-                  }
-                  showToast('Synced latest Main Gate requests!');
-                }}
-                onCreateVisitor={async (rec) => {
-                  await saveCreateVisitor(rec);
-                }}
-                onUpdateVisitorStatus={async (id, st) => {
-                  await saveUpdateVisitorStatus(id, st);
-                  showToast(st === 'APPROVED' ? 'Entry Approved!' : 'Entry Denied.');
-                }}
-                onAddFamilyMember={async (entry) => {
-                  await saveCreateDirectoryEntries([entry]);
-                }}
-                onDeleteDirectoryEntry={async (id) => {
-                  await saveDeleteDirectoryEntry(id);
-                  showToast('Family member removed.');
-                }}
-                onShareCredentials={handleShareCredentials}
-                onResetUserPin={handleResetUserPin}
-                onRequestConfirm={setConfirmConfig}
-                onShowToast={showToast}
-              />
+                {currentRole === 'host' && (
+                  <HostView
+                    session={session}
+                    visitors={visitors}
+                    directory={directory}
+                    logoDataUrl={logoDataUrl}
+                    hostAlertsEnabled={hostAlertsEnabled}
+                    onEnableHostAlerts={handleEnableHostAlerts}
+                    onRefreshVisitors={async () => {
+                      if (!isCloudMode) {
+                        const data = await fetchAppState();
+                        applyServerState(data);
+                      }
+                      showToast('Synced latest Main Gate requests!');
+                    }}
+                    onCreateVisitor={async (rec) => {
+                      await saveCreateVisitor(rec);
+                    }}
+                    onUpdateVisitorStatus={async (id, st) => {
+                      await saveUpdateVisitorStatus(id, st);
+                      showToast(st === 'APPROVED' ? 'Entry Approved!' : 'Entry Denied.');
+                    }}
+                    onAddFamilyMember={async (entry) => {
+                      await saveCreateDirectoryEntries([entry]);
+                    }}
+                    onDeleteDirectoryEntry={async (id) => {
+                      await saveDeleteDirectoryEntry(id);
+                      showToast('Family member removed.');
+                    }}
+                    onShareCredentials={handleShareCredentials}
+                    onResetUserPin={handleResetUserPin}
+                    onRequestConfirm={setConfirmConfig}
+                    onShowToast={showToast}
+                  />
+                )}
+              </>
             )}
 
             {currentRole === 'admin' && (
@@ -1072,7 +961,6 @@ export default function App() {
                 visitors={visitors}
                 directory={directory}
                 housingUnits={housingUnits}
-                designStudioMode={designStudioMode}
                 onOpenPersonalHostView={() => handleSwitchRole('host')}
                 onAddDirectoryEntries={async (entries) => {
                   const resUnits = entries
@@ -1108,12 +996,11 @@ export default function App() {
                 directory={directory}
                 logoDataUrl={logoDataUrl}
                 geofence={geofence}
-                designStudioMode={designStudioMode}
                 onAddAdmin={async (entry) => {
                   await saveCreateDirectoryEntries([entry]);
                 }}
-                onUpdateAdmin={async (id, name, phone) => {
-                  await saveUpdateDirectoryEntry(id, { name, phone });
+                onUpdateAdmin={async (id, name, phone, email) => {
+                  await saveUpdateDirectoryEntry(id, { name, phone, email: email || '' });
                 }}
                 onDeleteAdmin={async (id) => {
                   await saveDeleteDirectoryEntry(id);
@@ -1123,7 +1010,6 @@ export default function App() {
                 onShareCredentials={handleShareCredentials}
                 onUpdateLogo={saveUpdateLogo}
                 onUpdateGeofence={saveUpdateGeofence}
-                onToggleDesignStudio={() => setDesignStudioMode((prev) => !prev)}
                 onRequestConfirm={setConfirmConfig}
                 onShowToast={showToast}
               />
@@ -1149,21 +1035,8 @@ export default function App() {
       <SettingsModal
         open={settingsOpen}
         session={session}
-        demoBarEnabled={demoBarEnabled}
-        designStudioMode={designStudioMode}
         onClose={() => setSettingsOpen(false)}
         onSelfPinChange={handleSelfPinChange}
-        onToggleDemoBar={() => {
-          setDemoBarEnabled((prev) => {
-            const next = !prev;
-            if (!next && session) setCurrentRole(session.role);
-            return next;
-          });
-        }}
-        onToggleDesignStudio={() => {
-          setSettingsOpen(false);
-          setDesignStudioMode((prev) => !prev);
-        }}
       />
 
       <ForcePinModal open={forcePinOpen} onSubmit={handleForcedPinSetup} />
@@ -1176,6 +1049,11 @@ export default function App() {
 
       <SuperAdminLoginModal
         open={superAdminLoginOpen}
+        googleLoading={googleLoading}
+        firebaseEmail={firebaseUser?.email || null}
+        authError={authError}
+        onGoogleLogin={handleGoogleLogin}
+        onSwitchGoogleAccount={handleSwitchGoogleAccount}
         onClose={() => setSuperAdminLoginOpen(false)}
         onLogin={handleSuperAdminModalLogin}
       />
@@ -1201,15 +1079,6 @@ export default function App() {
             showToast('Could not copy automatically.');
           }
         }}
-      />
-
-      <BottomLeftRoleSwitcher
-        session={session}
-        currentRole={currentRole}
-        designStudioMode={designStudioMode}
-        onSelectLogin={handleDesignSelectLogin}
-        onSelectRole={handleDesignSelectRole}
-        onToggleDesignStudio={() => setDesignStudioMode((prev) => !prev)}
       />
     </div>
   );

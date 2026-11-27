@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, LogOut, Settings, Shield, Home, BarChart3, Lock } from 'lucide-react';
+import { ArrowLeft, LogOut, Settings } from 'lucide-react';
 import type { DirectoryEntry, RoleType, UserSession } from '../types/swagat';
 import { extractUnitName } from '../utils/formatters';
 
@@ -8,11 +8,7 @@ interface HeaderBarProps {
   currentRole: RoleType;
   directory: DirectoryEntry[];
   logoDataUrl: string;
-  designStudioMode: boolean;
-  demoBarEnabled: boolean;
-  hasPendingHostApprovals: boolean;
   onSwitchRole: (role: RoleType) => void;
-  onExitDesignStudio: () => void;
   onOpenSettings: () => void;
   onRequestLogout: () => void;
 }
@@ -22,11 +18,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   currentRole,
   directory,
   logoDataUrl,
-  designStudioMode,
-  demoBarEnabled,
-  hasPendingHostApprovals,
   onSwitchRole,
-  onExitDesignStudio,
   onOpenSettings,
   onRequestLogout,
 }) => {
@@ -66,7 +58,7 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
   const details = getCategoryDetails();
   const isDirector = session?.role === 'superadmin';
   const isAdminInOtherView = session?.role === 'admin' && currentRole !== 'admin';
-  const showBackButton = !designStudioMode && ((isDirector && currentRole !== 'superadmin') || isAdminInOtherView);
+  const showBackButton = (isDirector && currentRole !== 'superadmin') || isAdminInOtherView;
 
   return (
     <header className="bg-slate-900 text-white px-4 py-3 shrink-0 z-30 shadow-md relative">
@@ -88,17 +80,6 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
         </div>
 
         <div className="flex items-center gap-2 shrink-0 relative" ref={menuRef}>
-          {designStudioMode && (
-            <button
-              type="button"
-              onClick={onExitDesignStudio}
-              className="inline-flex items-center gap-1.5 min-h-[40px] px-3 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-xs font-bold transition whitespace-nowrap"
-            >
-              <Lock className="w-3.5 h-3.5" />
-              <span>Single View</span>
-            </button>
-          )}
-
           {showBackButton && (
             <button
               type="button"
@@ -158,55 +139,6 @@ export const HeaderBar: React.FC<HeaderBarProps> = ({
           )}
         </div>
       </div>
-
-      {designStudioMode && (
-        <div className="flex items-center justify-between bg-amber-500/15 border border-amber-400/30 rounded-xl px-3 py-2 mt-2.5 text-xs">
-          <span className="font-bold text-amber-300">Design Studio Mode — All Screens Live</span>
-          <button
-            type="button"
-            onClick={onExitDesignStudio}
-            className="px-2.5 py-1 rounded-lg bg-amber-400 text-slate-950 font-bold hover:bg-amber-300 transition whitespace-nowrap"
-          >
-            Exit Design Mode
-          </button>
-        </div>
-      )}
-
-      {demoBarEnabled && session?.role === 'admin' && !designStudioMode && (
-        <div className="grid grid-cols-3 gap-1.5 bg-slate-800/90 p-1 rounded-xl text-xs font-semibold mt-3">
-          <button
-            type="button"
-            onClick={() => onSwitchRole('guard')}
-            className={`min-h-[40px] py-2 px-2 rounded-lg transition flex items-center justify-center gap-1.5 whitespace-nowrap ${
-              currentRole === 'guard' ? 'bg-blue-600 text-white shadow' : 'text-slate-300 hover:text-white'
-            }`}
-          >
-            <Shield className="w-3.5 h-3.5" />
-            <span>Guard</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => onSwitchRole('host')}
-            className={`min-h-[40px] py-2 px-2 rounded-lg transition flex items-center justify-center gap-1.5 relative whitespace-nowrap ${
-              currentRole === 'host' ? 'bg-blue-600 text-white shadow' : 'text-slate-300 hover:text-white'
-            }`}
-          >
-            <Home className="w-3.5 h-3.5" />
-            <span>Host</span>
-            {hasPendingHostApprovals && <span className="w-2 h-2 rounded-full bg-amber-400" />}
-          </button>
-          <button
-            type="button"
-            onClick={() => onSwitchRole('admin')}
-            className={`min-h-[40px] py-2 px-2 rounded-lg transition flex items-center justify-center gap-1.5 whitespace-nowrap ${
-              currentRole === 'admin' ? 'bg-blue-600 text-white shadow' : 'text-slate-300 hover:text-white'
-            }`}
-          >
-            <BarChart3 className="w-3.5 h-3.5" />
-            <span>Admin</span>
-          </button>
-        </div>
-      )}
     </header>
   );
 };

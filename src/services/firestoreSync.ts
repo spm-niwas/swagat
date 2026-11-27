@@ -14,7 +14,13 @@ import {
   writeBatch,
   type Unsubscribe,
 } from 'firebase/firestore';
-import { signInWithPopup, signOut, type User } from 'firebase/auth';
+import {
+  getRedirectResult,
+  signInWithPopup,
+  signInWithRedirect,
+  signOut,
+  type User,
+} from 'firebase/auth';
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../firebase';
 import type {
   AccessZone,
@@ -61,9 +67,63 @@ function clampRadius(r: unknown): number {
   return Math.max(10, Math.min(5000, Math.round(num)));
 }
 
-export async function signInWithGoogleFirebase(): Promise<User> {
-  const result = await signInWithPopup(auth, googleProvider);
-  return result.user;
+export function makeEmailKey(email: string): string {
+  return email.trim().toLowerCase().replace(/[^a-z0-9]/g, '_');
+}
+
+export function formatFirebaseAuthError(err: unknown): string {
+  const code = (err as { code?: string })?.code || '';
+  const rawMessage = err instanceof Error ? err.message : String(err || '');
+  const host = typeof window !== 'undefined' ? window.location.hostname : 'this domain';
+
+  if (code === 'auth/unauthorized-domain' || rawMessage.includes('auth/unauthorized-domain')) {
+    return `Domain "${host}" is not authorized in Firebase Authentication. Add "${host}" under Firebase Console → Authentication → Settings → Authorized domains.`;
+  }
+  if (code === 'auth/popup-blocked' || rawMessage.includes('auth/popup-blocked')) {
+    return 'Google Sign-In popup was blocked by your browser. Allow popups or wait for redirect sign-in.';
+  }
+  if (code === 'auth/popup-closed-by-user' || rawMessage.includes('auth/popup-closed-by-user')) {
+    return 'Google Sign-In popup was closed before completing login. Please try again.';
+  }
+  if (code === 'auth/cancelled-popup-request' || rawMessage.includes('auth/cancelled-popup-request')) {
+    return 'Sign-in request was interrupted. Please tap Continue with Google again.';
+  }
+  if (code === 'auth/network-request-failed' || rawMessage.includes('auth/network-request-failed')) {
+    return 'Network error contacting Google Sign-In. Check your internet connection and retry.';
+  }
+  if (code === 'auth/operation-not-allowed' || rawMessage.includes('auth/operation-not-allowed')) {
+    return 'Google Sign-In provider is disabled in Firebase Console → Authentication → Sign-in method.';
+  }
+  if (rawMessage.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(rawMessage) as { error?: string; path?: string };
+      if (parsed?.error) {
+        return parsed.path ? `${parsed.error} (${parsed.path})` : parsed.error;
+      }
+    } catch {
+      // ignore non-JSON
+    }
+  }
+  return rawMessage || 'Google Sign-In failed. Please try again.';
+}
+
+export async function signInWithGoogleFirebase(): Promise<User | null> {
+  try {
+    const result = await signInWithPopup(auth, googleProvider);
+    return result.user;
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code || '';
+    if (code === 'auth/popup-blocked') {
+      await signInWithRedirect(auth, googleProvider);
+      return null;
+    }
+    throw err;
+  }
+}
+
+export async function checkGoogleRedirectResult(): Promise<User | null> {
+  const result = await getRedirectResult(auth);
+  return result ? result.user : null;
 }
 
 export async function signOutFirebase(): Promise<void> {
@@ -95,14 +155,36 @@ export async function ensureAndResolveFirebaseUser(user: User): Promise<Resolved
     handleFirestoreError(err, OperationType.GET, `users/${user.uid}`);
   }
 
-  // Check admin & guard role collections
+  // Check admin, approvedAdmins, & guard role collections
   let hasAdminDoc = false;
   let hasGuardDoc = false;
+  let approvedAdminName = '';
   try {
     const adminSnap = await getDoc(doc(db, 'admins', user.uid));
     hasAdminDoc = adminSnap.exists();
   } catch {
     hasAdminDoc = false;
+  }
+  if (!isSuperAdmin && !hasAdminDoc && email) {
+    try {
+      const approvedSnap = await getDoc(doc(db, 'approvedAdmins', makeEmailKey(email)));
+      if (approvedSnap.exists()) {
+        hasAdminDoc = true;
+        approvedAdminName = String(approvedSnap.data()?.name || '');
+        try {
+          await setDoc(doc(db, 'admins', user.uid), {
+            uid: user.uid,
+            email,
+            name: (approvedAdminName || displayName).slice(0, 100),
+            createdAt: serverTimestamp(),
+          });
+        } catch {
+          // Non-fatal: approvedAdmins doc already grants admin access via rules
+        }
+      }
+    } catch {
+      // ignore if not approved
+    }
   }
   try {
     const guardSnap = await getDoc(doc(db, 'guards', user.uid));
@@ -150,8 +232,8 @@ export async function ensureAndResolveFirebaseUser(user: User): Promise<Resolved
       await setDoc(userRef, {
         uid: user.uid,
         email: email || `${user.uid}@spmniwas.local`,
-        displayName,
-        role: isSuperAdmin ? 'superadmin' : 'host',
+        displayName: (approvedAdminName || displayName).slice(0, 100),
+        role: isSuperAdmin ? 'superadmin' : hasAdminDoc ? 'admin' : 'host',
         phone: phone.slice(0, 20),
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -165,7 +247,7 @@ export async function ensureAndResolveFirebaseUser(user: User): Promise<Resolved
     role,
     isAdmin: role === 'superadmin' || role === 'admin',
     isGuard: role === 'guard',
-    name: matchedDirEntries[0]?.name || displayName,
+    name: matchedDirEntries[0]?.name || approvedAdminName || displayName,
     email,
     phone,
     allowedUnits,
@@ -664,7 +746,18 @@ export async function fsCreateDirectoryEntries(
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
-    if (item.email) docData.email = item.email.trim().toLowerCase().slice(0, 120);
+    if (item.email) {
+      const cleanEmail = item.email.trim().toLowerCase().slice(0, 120);
+      docData.email = cleanEmail;
+      if (item.zone === 'ADMIN' && cleanEmail) {
+        batch.set(doc(db, 'approvedAdmins', makeEmailKey(cleanEmail)), {
+          email: cleanEmail,
+          name: String(docData.name),
+          directoryId: id,
+          createdAt: serverTimestamp(),
+        });
+      }
+    }
     if (item.uid) docData.uid = item.uid.slice(0, 128);
 
     batch.set(doc(db, 'directory', id), docData);
@@ -713,12 +806,54 @@ export async function fsUpdateDirectoryEntry(
   if (patch.name !== undefined) safePatch.name = String(patch.name).trim().slice(0, 100);
   if (patch.phone !== undefined) safePatch.phone = (normalizeIndianMobile(patch.phone) || patch.phone).slice(0, 120);
   if (patch.unit !== undefined) safePatch.unit = String(patch.unit).trim().slice(0, 100);
+  if (patch.email !== undefined) safePatch.email = String(patch.email).trim().toLowerCase().slice(0, 120);
   if (patch.pin !== undefined && /^\d{4}$/.test(patch.pin)) safePatch.pin = patch.pin;
   if (patch.pinMustChange !== undefined) safePatch.pinMustChange = Boolean(patch.pinMustChange);
   if (patch.pinResetRequested !== undefined) safePatch.pinResetRequested = Boolean(patch.pinResetRequested);
 
   try {
-    await updateDoc(doc(db, 'directory', id), safePatch);
+    const dirRef = doc(db, 'directory', id);
+    if (patch.email !== undefined || patch.name !== undefined) {
+      const existingSnap = await getDoc(dirRef);
+      const existingData = existingSnap.exists() ? existingSnap.data() : null;
+      if (existingData && existingData.zone === 'ADMIN') {
+        const oldEmail = String(existingData.email || '').trim().toLowerCase();
+        const nextEmail =
+          patch.email !== undefined
+            ? String(patch.email).trim().toLowerCase().slice(0, 120)
+            : oldEmail;
+        const nextName =
+          patch.name !== undefined
+            ? String(patch.name).trim().slice(0, 100)
+            : String(existingData.name || 'Campus Admin').slice(0, 100);
+
+        const batch = writeBatch(db);
+        batch.update(dirRef, safePatch);
+        if (oldEmail && oldEmail !== nextEmail) {
+          batch.delete(doc(db, 'approvedAdmins', makeEmailKey(oldEmail)));
+        }
+        if (nextEmail) {
+          const nextRef = doc(db, 'approvedAdmins', makeEmailKey(nextEmail));
+          const nextSnap = await getDoc(nextRef);
+          if (nextSnap.exists()) {
+            batch.update(nextRef, {
+              name: nextName,
+              directoryId: id,
+            });
+          } else {
+            batch.set(nextRef, {
+              email: nextEmail,
+              name: nextName,
+              directoryId: id,
+              createdAt: serverTimestamp(),
+            });
+          }
+        }
+        await batch.commit();
+        return;
+      }
+    }
+    await updateDoc(dirRef, safePatch);
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, `directory/${id}`);
   }
@@ -755,10 +890,18 @@ export async function fsUpdateUserPinByPhone(
 }
 
 export async function fsDeleteDirectoryEntry(id: string): Promise<void> {
-  const batch = writeBatch(db);
-  batch.delete(doc(db, 'directory', id));
-  batch.delete(doc(db, 'destinations', `dest_${id}`));
+  const dirRef = doc(db, 'directory', id);
   try {
+    const existingSnap = await getDoc(dirRef);
+    const batch = writeBatch(db);
+    batch.delete(dirRef);
+    batch.delete(doc(db, 'destinations', `dest_${id}`));
+    if (existingSnap.exists()) {
+      const data = existingSnap.data();
+      if (data.zone === 'ADMIN' && data.email) {
+        batch.delete(doc(db, 'approvedAdmins', makeEmailKey(String(data.email))));
+      }
+    }
     await batch.commit();
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `directory/${id}`);

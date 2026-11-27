@@ -55,7 +55,6 @@ interface HostViewProps {
   visitors: VisitorRecord[];
   directory: DirectoryEntry[];
   logoDataUrl?: string;
-  designStudioMode: boolean;
   hostAlertsEnabled: boolean;
   onEnableHostAlerts: () => Promise<void>;
   onRefreshVisitors: () => Promise<void>;
@@ -74,7 +73,6 @@ export const HostView: React.FC<HostViewProps> = ({
   visitors,
   directory,
   logoDataUrl,
-  designStudioMode,
   hostAlertsEnabled,
   onEnableHostAlerts,
   onRefreshVisitors,
@@ -156,21 +154,18 @@ export const HostView: React.FC<HostViewProps> = ({
     );
   };
 
-  const hasHouseAccess = (() => {
-    if (designStudioMode && (!session || !session.allowedUnits?.length)) return true;
-    return Boolean(
-      session?.allowedUnits?.some(
-        (u) =>
-          u.toLowerCase().startsWith('flat') ||
-          directory.some((d) => d.zone === 'RESIDENTIAL' && isSameUnit(d.unit, u))
-      )
-    );
-  })();
+  const hasHouseAccess = Boolean(
+    session?.allowedUnits?.some(
+      (u) =>
+        u.toLowerCase().startsWith('flat') ||
+        directory.some((d) => d.zone === 'RESIDENTIAL' && isSameUnit(d.unit, u))
+    )
+  );
 
   const categoryOptions = buildCategoryOptions(hasHouseAccess);
 
   const unitVisitors = visitors.filter((v) =>
-    canHostViewVisitor(v, session, directory, designStudioMode)
+    canHostViewVisitor(v, session, directory)
   );
   const pendingVisitors = unitVisitors.filter((v) => v.status === 'PENDING');
   const historyVisitors = unitVisitors.filter((v) => v.status !== 'PENDING');
@@ -185,9 +180,6 @@ export const HostView: React.FC<HostViewProps> = ({
       const idx = resUnit.indexOf(' - ');
       return idx !== -1 ? resUnit.slice(0, idx).trim() : resUnit.trim();
     }
-    if (designStudioMode) {
-      return directory.find((d) => d.zone === 'RESIDENTIAL')?.unit || '';
-    }
     return '';
   })();
 
@@ -200,9 +192,7 @@ export const HostView: React.FC<HostViewProps> = ({
     : [];
 
   const viewerIsPrimary = (() => {
-    if (!activeResidentialUnit) return false;
-    if (designStudioMode && !session) return true;
-    if (!session) return false;
+    if (!activeResidentialUnit || !session) return false;
     const me = flatMembers.find(
       (m) => normalizeIndianMobile(m.phone) === normalizeIndianMobile(session.phone)
     );
@@ -225,8 +215,7 @@ export const HostView: React.FC<HostViewProps> = ({
     const destination = resolveHostDestinationForCategory(
       guestType,
       session,
-      directory,
-      designStudioMode
+      directory
     );
     const isRes =
       destination.toLowerCase().startsWith('flat') ||
@@ -354,8 +343,7 @@ export const HostView: React.FC<HostViewProps> = ({
     const destination = resolveHostDestinationForCategory(
       guestType,
       session,
-      directory,
-      designStudioMode
+      directory
     );
     try {
       const res = await draftAiInviteApi({

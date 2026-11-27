@@ -32,14 +32,25 @@ service cloud.firestore {
       return isVerifiedUser() && request.auth.uid == userId;
     }
 
+    function emailDocKey(email) {
+      return email.lower().replace('[^a-z0-9]', '_');
+    }
+
     function isSuperAdmin() {
-      return isVerifiedUser() && request.auth.token.email == 'director@spmniwas.in';
+      return isVerifiedUser() &&
+        request.auth.token.email is string &&
+        request.auth.token.email.lower() == 'director@spmniwas.in';
     }
 
     function isAdmin() {
       return isSuperAdmin() || (
-        isVerifiedUser() &&
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        isVerifiedUser() && (
+          exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+          (
+            request.auth.token.email is string &&
+            exists(/databases/$(database)/documents/approvedAdmins/$(emailDocKey(request.auth.token.email)))
+          )
+        )
       );
     }
 
@@ -49,6 +60,15 @@ service cloud.firestore {
     }
 
     // Entity Validation Blueprints
+    function isValidApprovedAdmin(data) {
+      return data.keys().hasAll(['email', 'name', 'createdAt']) &&
+        data.keys().hasOnly(['email', 'name', 'directoryId', 'createdAt']) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 120 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        (!('directoryId' in data) || (data.directoryId is string && data.directoryId.size() <= 128)) &&
+        data.createdAt is timestamp;
+    }
+
     function isValidAdminRole(data) {
       return data.keys().hasAll(['uid', 'email', 'name', 'createdAt']) &&
         data.keys().hasOnly(['uid', 'email', 'name', 'createdAt']) &&
@@ -162,6 +182,31 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    // 0. Approved Admin Emails Collection
+    match /approvedAdmins/{emailKey} {
+      allow get: if isValidId(emailKey) && (
+        isAdmin() ||
+        (
+          isVerifiedUser() &&
+          request.auth.token.email is string &&
+          emailKey == emailDocKey(request.auth.token.email)
+        )
+      );
+      allow list: if isAdmin();
+      allow create: if isAdmin() &&
+        isValidId(emailKey) &&
+        isValidApprovedAdmin(incoming()) &&
+        emailKey == emailDocKey(incoming().email) &&
+        incoming().createdAt == request.time;
+      allow update: if isAdmin() &&
+        isValidId(emailKey) &&
+        isValidApprovedAdmin(incoming()) &&
+        incoming().email == existing().email &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'directoryId']);
+      allow delete: if isAdmin() && isValidId(emailKey);
+    }
+
     // 1. Admins Role Collection
     match /admins/{adminUid} {
       allow get: if isValidId(adminUid) && (isOwner(adminUid) || isAdmin());
@@ -233,13 +278,15 @@ service cloud.firestore {
         isAdmin() ||
         (isVerifiedUser() && (
           existing().uid == request.auth.uid ||
-          existing().email == request.auth.token.email
+          existing().email == request.auth.token.email ||
+          (request.auth.token.email is string && existing().email == request.auth.token.email.lower())
         ))
       );
       allow list: if isAdmin() || (
         isVerifiedUser() && (
           resource.data.uid == request.auth.uid ||
-          resource.data.email == request.auth.token.email
+          resource.data.email == request.auth.token.email ||
+          (request.auth.token.email is string && resource.data.email == request.auth.token.email.lower())
         )
       );
       allow create: if isAdmin() &&
@@ -254,7 +301,11 @@ service cloud.firestore {
         incoming().updatedAt == request.time && (
           isAdmin() ||
           (
-            (existing().uid == request.auth.uid || existing().email == request.auth.token.email) &&
+            (
+              existing().uid == request.auth.uid ||
+              existing().email == request.auth.token.email ||
+              (request.auth.token.email is string && existing().email == request.auth.token.email.lower())
+            ) &&
             (!('uid' in incoming()) || incoming().uid == request.auth.uid) &&
             incoming().zone == existing().zone &&
             incoming().unit == existing().unit &&

@@ -36,7 +36,6 @@ interface AdminViewProps {
   visitors: VisitorRecord[];
   directory: DirectoryEntry[];
   housingUnits: string[];
-  designStudioMode: boolean;
   onOpenPersonalHostView: () => void;
   onAddDirectoryEntries: (entries: Array<Omit<DirectoryEntry, 'id'>>) => Promise<void>;
   onAddHousingUnits: (unitsText: string) => Promise<{ added: string[] }>;
@@ -71,7 +70,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
   visitors,
   directory,
   housingUnits,
-  designStudioMode,
   onOpenPersonalHostView,
   onAddDirectoryEntries,
   onAddHousingUnits,
@@ -328,15 +326,9 @@ export const AdminView: React.FC<AdminViewProps> = ({
   };
 
   return (
-    <section
-      className={
-        designStudioMode
-          ? 'space-y-4 w-full'
-          : 'space-y-4 lg:grid lg:grid-cols-12 lg:gap-6 lg:space-y-0 lg:items-start max-w-6xl mx-auto w-full'
-      }
-    >
-      {/* Left Column */}
-      <div className={designStudioMode ? 'space-y-4' : 'space-y-4 lg:col-span-5 min-w-0'}>
+    <section className="space-y-4 w-full">
+      {/* Overview Section */}
+      <div className="space-y-4">
         {adminUnits.length > 0 && (
           <div className="bg-gradient-to-r from-indigo-900 to-slate-900 text-white rounded-2xl p-4 shadow-md flex items-center justify-between gap-3">
             <div className="min-w-0">
@@ -445,8 +437,8 @@ export const AdminView: React.FC<AdminViewProps> = ({
         </div>
       </div>
 
-      {/* Right Column: Users, Housing Units, PIN Reset Requests */}
-      <div className={designStudioMode ? 'space-y-3' : 'space-y-3 lg:col-span-7 min-w-0'}>
+      {/* Management Section: Users, Housing Units, PIN Reset Requests */}
+      <div className="space-y-3">
         {/* 1. Users Toggle */}
         <button
           type="button"

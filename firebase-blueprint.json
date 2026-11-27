@@ -1,5 +1,17 @@
 {
   "entities": {
+    "ApprovedAdmin": {
+      "title": "Approved Admin Email",
+      "description": "Maps normalized Campus Admin Google email key to admin authorization.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "minLength": 3, "maxLength": 120 },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "directoryId": { "type": "string", "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["email", "name", "createdAt"]
+    },
     "AdminRole": {
       "title": "Admin Role Assignment",
       "description": "Trusted mapping of Firebase Auth UID to campus administrator privilege.",
@@ -123,6 +135,10 @@
     }
   },
   "firestore": {
+    "/approvedAdmins/{emailKey}": {
+      "schema": { "$ref": "#/entities/ApprovedAdmin" },
+      "description": "Approved Campus Admin emails authorized to access the Admin Dashboard via Google Sign-In."
+    },
     "/admins/{adminUid}": {
       "schema": { "$ref": "#/entities/AdminRole" },
       "description": "Admin role assignment documents keyed by Firebase Auth UID."
