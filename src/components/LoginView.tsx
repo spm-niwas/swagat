@@ -1,17 +1,17 @@
 import React, { useState } from 'react';
-import { Building2, Crown, KeyRound } from 'lucide-react';
+import { Building2, KeyRound, ShieldCheck } from 'lucide-react';
 import {
-  displayIndianMobile,
   isValidIndianMobile,
   normalizeIndianMobile,
 } from '../utils/formatters';
+import { MobileInput } from './MobileInput';
 
 interface LoginViewProps {
   logoDataUrl: string;
   attemptHint: string;
   onPinLogin: (phone: string, pin: string) => void;
   onOpenForgotPin: () => void;
-  onOpenSuperAdminLogin: () => void;
+  onOpenAdminLogin: () => void;
 }
 
 export const LoginView: React.FC<LoginViewProps> = ({
@@ -19,19 +19,10 @@ export const LoginView: React.FC<LoginViewProps> = ({
   attemptHint,
   onPinLogin,
   onOpenForgotPin,
-  onOpenSuperAdminLogin,
+  onOpenAdminLogin,
 }) => {
   const [phoneInput, setPhoneInput] = useState('');
   const [pinInput, setPinInput] = useState('');
-
-  const handlePhoneChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const cleaned = normalizeIndianMobile(e.target.value);
-    if (cleaned.length > 0 && !/^[6-9]/.test(cleaned)) {
-      setPhoneInput('');
-      return;
-    }
-    setPhoneInput(displayIndianMobile(cleaned));
-  };
 
   const handlePinChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setPinInput(e.target.value.replace(/[^0-9]/g, '').slice(0, 4));
@@ -79,14 +70,12 @@ export const LoginView: React.FC<LoginViewProps> = ({
           className="w-full bg-white/95 backdrop-blur-md rounded-3xl p-5 shadow-xl shadow-indigo-950/10 border border-white space-y-3 text-left"
         >
           <div>
-            <input
-              type="tel"
-              inputMode="numeric"
-              maxLength={16}
+            <MobileInput
               value={phoneInput}
-              onChange={handlePhoneChange}
-              placeholder="Mobile Number"
-              aria-label="Mobile Number"
+              onChange={(formatted) => setPhoneInput(formatted)}
+              placeholder="Mobile"
+              ariaLabel="Mobile"
+              errorAlign="center"
               className="w-full min-h-[48px] bg-slate-50 border border-indigo-100 rounded-xl px-4 py-3 text-base font-bold font-mono-tabular tracking-wider text-center text-slate-900 placeholder:font-sans placeholder:font-medium placeholder:tracking-normal placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
             />
           </div>
@@ -113,23 +102,26 @@ export const LoginView: React.FC<LoginViewProps> = ({
             <span>{phoneReady && pinInput.length === 4 ? 'Sign In' : 'Login'}</span>
           </button>
 
-          <div className="flex flex-col items-center justify-center pt-1.5 text-xs text-center space-y-2">
-            <button
-              type="button"
-              onClick={onOpenForgotPin}
-              className="min-h-[36px] px-2 font-bold text-indigo-700 hover:text-amber-700 hover:underline transition"
-            >
-              Forgot Pin?
-            </button>
-            <button
-              type="button"
-              onClick={onOpenSuperAdminLogin}
-              className="min-h-[36px] px-2 inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-indigo-800 transition"
-            >
-              <Crown className="w-3.5 h-3.5 text-amber-600" />
-              <span>Super Admin Login</span>
-            </button>
-            {attemptHint && <span className="text-rose-600 font-semibold">{attemptHint}</span>}
+          <div className="pt-1.5 text-xs text-center space-y-2">
+            <div className="flex items-center justify-center gap-3 whitespace-nowrap">
+              <button
+                type="button"
+                onClick={onOpenForgotPin}
+                className="min-h-[36px] px-2 font-bold text-indigo-700 hover:text-amber-700 hover:underline transition"
+              >
+                Forgot Pin?
+              </button>
+              <span className="h-3.5 w-px bg-slate-300 shrink-0" aria-hidden="true" />
+              <button
+                type="button"
+                onClick={onOpenAdminLogin}
+                className="min-h-[36px] px-2 inline-flex items-center gap-1.5 text-xs font-semibold text-slate-600 hover:text-indigo-800 transition"
+              >
+                <ShieldCheck className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                <span>Admin</span>
+              </button>
+            </div>
+            {attemptHint && <p className="text-rose-600 font-semibold">{attemptHint}</p>}
           </div>
         </form>
       </div>

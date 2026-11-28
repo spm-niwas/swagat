@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express, { type Request, type Response } from 'express';
+import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -82,7 +83,6 @@ function createSeedDatabase(): DatabaseSchema {
       { id: 'dir_6', zone: 'RESIDENTIAL', unit: 'Flat B-105', name: 'Dr. Anita Sen', phone: '9811122233', pin: '3333', pinMustChange: false, pinResetRequested: false },
       { id: 'dir_7', zone: 'RESIDENTIAL', unit: 'Flat A-201', name: 'K. Subramanian', phone: '9855566677', pin: '7777', pinMustChange: false, pinResetRequested: false },
       { id: 'dir_8', zone: 'RESIDENTIAL', unit: 'Flat B-304', name: 'Neha Kapoor', phone: '9866677788', pin: '8888', pinMustChange: false, pinResetRequested: false },
-      { id: 'dir_admin_1', zone: 'ADMIN', unit: 'Management Office', name: 'SPM NIWAS Admin', phone: '9999999999', pin: '9999', pinMustChange: false, pinResetRequested: false },
     ],
     visitors: [
       {
@@ -156,7 +156,10 @@ function loadDatabase(): DatabaseSchema {
       return seed;
     }
     parsed.directory = parsed.directory.filter(
-      (d) => d.zone !== 'SUPERADMIN' && (d.email || '').toLowerCase() !== SUPERADMIN_EMAIL
+      (d) =>
+        d.zone !== 'SUPERADMIN' &&
+        (d.email || '').toLowerCase() !== SUPERADMIN_EMAIL &&
+        !(d.zone === 'ADMIN' && !d.email)
     );
     if (!Array.isArray(parsed.housingUnits)) {
       const seen = new Set<string>();
@@ -297,17 +300,20 @@ async function startServer() {
     const items = Array.isArray(body.entries) ? body.entries : [req.body as Omit<DirectoryEntry, 'id'>];
     const created: DirectoryEntry[] = [];
     for (const item of items) {
-      if (!item || item.zone === 'SUPERADMIN' || !item.name || !item.zone || !item.phone) continue;
+      if (!item || item.zone === 'SUPERADMIN' || !item.name || !item.zone) continue;
+      const isAdminEntry = item.zone === 'ADMIN';
+      if (isAdminEntry && !item.email) continue;
+      if (!isAdminEntry && !item.phone) continue;
       const entry: DirectoryEntry = {
         id: `dir_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         zone: item.zone,
         unit: String(item.unit || '').trim(),
         name: String(item.name).trim(),
-        email: item.email,
-        phone: normalizePhone(String(item.phone)) || String(item.phone),
-        pin: String(item.pin || Math.floor(1000 + Math.random() * 9000)),
-        pinMustChange: Boolean(item.pinMustChange),
-        pinResetRequested: Boolean(item.pinResetRequested),
+        email: item.email ? String(item.email).trim().toLowerCase() : undefined,
+        phone: isAdminEntry ? '' : normalizePhone(String(item.phone)) || String(item.phone),
+        pin: isAdminEntry ? '' : String(item.pin || Math.floor(1000 + Math.random() * 9000)),
+        pinMustChange: isAdminEntry ? false : Boolean(item.pinMustChange),
+        pinResetRequested: isAdminEntry ? false : Boolean(item.pinResetRequested),
         isFamilyMember: Boolean(item.isFamilyMember),
         isPrimaryHost: Boolean(item.isPrimaryHost),
       };
@@ -350,7 +356,7 @@ async function startServer() {
     }
     let updated = 0;
     dbState.directory = dbState.directory.map((d) => {
-      if (d.zone === 'SUPERADMIN') return d;
+      if (d.zone === 'SUPERADMIN' || d.zone === 'ADMIN') return d;
       if (normalizePhone(d.phone) === cleanPhone) {
         updated++;
         return {
@@ -379,7 +385,7 @@ async function startServer() {
     }
     let found = false;
     dbState.directory = dbState.directory.map((d) => {
-      if (d.zone === 'SUPERADMIN') return d;
+      if (d.zone === 'SUPERADMIN' || d.zone === 'ADMIN') return d;
       if (normalizePhone(d.phone) === cleanPhone) {
         found = true;
         return { ...d, pinResetRequested: true };
@@ -564,11 +570,17 @@ async function startServer() {
     }
   });
 
+  const httpServer = http.createServer(app);
+
   // Vite middleware in dev, static serving in production
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        ws: { server: httpServer },
+        allowedHosts: true,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -580,7 +592,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Swagat SPM NIWAS server running at http://localhost:${PORT}`);
   });
 }

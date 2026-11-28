@@ -22,6 +22,7 @@ import {
   normalizeIndianMobile,
 } from '../utils/formatters';
 import { analyzeIdOrPlateApi } from '../services/api';
+import { MobileInput } from './MobileInput';
 
 interface GuardViewProps {
   visitors: VisitorRecord[];
@@ -135,6 +136,8 @@ export const GuardView: React.FC<GuardViewProps> = ({
     e.target.value = '';
   };
 
+  const isPhoneOptional = visitorType === 'Delivery' || visitorType === 'Cab / Taxi';
+
   const handleWalkInSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!onEnforceGeofence()) return;
@@ -146,8 +149,12 @@ export const GuardView: React.FC<GuardViewProps> = ({
       onShowToast('Please select a Host/Unit and enter Visitor Name.');
       return;
     }
-    if (!isValidIndianMobile(cleanPhone)) {
-      onShowToast('Enter a valid 10-digit visitor mobile starting with 6, 7, 8, or 9.');
+    if (!isPhoneOptional && !isValidIndianMobile(cleanPhone)) {
+      onShowToast('Enter a valid 10-digit Mobile starting with 6, 7, 8, or 9.');
+      return;
+    }
+    if (isPhoneOptional && cleanPhone.length > 0 && !isValidIndianMobile(cleanPhone)) {
+      onShowToast('Enter a valid 10-digit Mobile starting with 6, 7, 8, or 9, or leave it blank.');
       return;
     }
 
@@ -156,7 +163,7 @@ export const GuardView: React.FC<GuardViewProps> = ({
       const now = Date.now();
       await onCreateVisitor({
         visitorName: name,
-        visitorPhone: displayIndianMobile(cleanPhone),
+        visitorPhone: cleanPhone ? displayIndianMobile(cleanPhone) : 'Not Provided',
         visitorType,
         zone: selectedZone,
         destination,
@@ -432,32 +439,6 @@ export const GuardView: React.FC<GuardViewProps> = ({
 
         {/* Visitor Details */}
         <div className="space-y-2.5">
-          <input
-            type="text"
-            value={visitorName}
-            onChange={(e) => setVisitorName(formatTitleCaseValue(e.target.value))}
-            placeholder="Name *"
-            aria-label="Visitor Name"
-            className="w-full min-h-[44px] bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
-          />
-          <input
-            type="tel"
-            inputMode="numeric"
-            maxLength={16}
-            value={visitorPhone}
-            onChange={(e) => {
-              const cleaned = normalizeIndianMobile(e.target.value);
-              if (cleaned.length > 0 && !/^[6-9]/.test(cleaned)) {
-                setVisitorPhone('');
-                onShowToast('Indian mobile numbers must start with 6, 7, 8, or 9.');
-                return;
-              }
-              setVisitorPhone(displayIndianMobile(cleaned));
-            }}
-            placeholder="Phone * (e.g., 98765 43210)"
-            aria-label="Visitor Phone"
-            className="w-full min-h-[44px] bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono-tabular placeholder:font-sans focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
-          />
           <select
             value={visitorType}
             onChange={(e) => setVisitorType(e.target.value)}
@@ -470,6 +451,21 @@ export const GuardView: React.FC<GuardViewProps> = ({
               </option>
             ))}
           </select>
+          <input
+            type="text"
+            value={visitorName}
+            onChange={(e) => setVisitorName(formatTitleCaseValue(e.target.value))}
+            placeholder="Name *"
+            aria-label="Visitor Name"
+            className="w-full min-h-[44px] bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
+          />
+          <MobileInput
+            value={visitorPhone}
+            onChange={(formatted) => setVisitorPhone(formatted)}
+            placeholder={isPhoneOptional ? 'Mobile (Optional)' : 'Mobile *'}
+            ariaLabel={isPhoneOptional ? 'Mobile (Optional)' : 'Mobile *'}
+            className="w-full min-h-[44px] bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono-tabular placeholder:font-sans focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white"
+          />
           <input
             type="text"
             value={visitorVehicle}

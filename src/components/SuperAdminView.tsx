@@ -7,29 +7,21 @@ import {
   Crown,
   Edit3,
   MapPin,
-  RotateCcw,
   Trash2,
   Upload,
   UserPlus,
   X,
 } from 'lucide-react';
 import type { ConfirmDialogConfig, DirectoryEntry, GeofenceConfig } from '../types/swagat';
-import {
-  displayIndianMobile,
-  formatTitleCaseValue,
-  isValidIndianMobile,
-  normalizeIndianMobile,
-} from '../utils/formatters';
+import { formatTitleCaseValue, validateGoogleAdminEmail } from '../utils/formatters';
 
 interface SuperAdminViewProps {
   directory: DirectoryEntry[];
   logoDataUrl: string;
   geofence: GeofenceConfig;
   onAddAdmin: (entry: Omit<DirectoryEntry, 'id'>) => Promise<void>;
-  onUpdateAdmin: (id: string, name: string, phone: string, email?: string) => Promise<void>;
+  onUpdateAdmin: (id: string, name: string, email: string) => Promise<void>;
   onDeleteAdmin: (id: string) => Promise<void>;
-  onResetUserPin: (entry: DirectoryEntry) => Promise<void>;
-  onShareCredentials: (name: string, phone: string, pin: string) => void;
   onUpdateLogo: (dataUrl: string) => Promise<void>;
   onUpdateGeofence: (geo: GeofenceConfig) => Promise<void>;
   onRequestConfirm: (cfg: ConfirmDialogConfig) => void;
@@ -45,8 +37,6 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
   onAddAdmin,
   onUpdateAdmin,
   onDeleteAdmin,
-  onResetUserPin,
-  onShareCredentials,
   onUpdateLogo,
   onUpdateGeofence,
   onRequestConfirm,
@@ -54,91 +44,87 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
 }) => {
   const [openSection, setOpenSection] = useState<SuperSection>('none');
   const [newName, setNewName] = useState('');
-  const [newPhone, setNewPhone] = useState('');
   const [newEmail, setNewEmail] = useState('');
+  const [emailError, setEmailError] = useState('');
+  const [addingAdmin, setAddingAdmin] = useState(false);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
-  const [editPhone, setEditPhone] = useState('');
   const [editEmail, setEditEmail] = useState('');
+  const [editEmailError, setEditEmailError] = useState('');
 
   const [latInput, setLatInput] = useState(geofence.lat !== null ? String(geofence.lat) : '');
   const [lngInput, setLngInput] = useState(geofence.lng !== null ? String(geofence.lng) : '');
   const [radiusInput, setRadiusInput] = useState(String(geofence.radiusMeters || 100));
   const [capturingGps, setCapturingGps] = useState(false);
 
-  const admins = directory.filter((d) => d.zone === 'ADMIN');
+  const admins = directory.filter((d) => d.zone === 'ADMIN' && Boolean(d.email));
 
   const handleAddAdminSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const name = newName.trim();
-    const cleanPhone = normalizeIndianMobile(newPhone);
-    const cleanEmail = newEmail.trim().toLowerCase();
-    const pin = String(Math.floor(1000 + Math.random() * 9000));
+    const check = validateGoogleAdminEmail(newEmail);
 
     if (!name) {
       onShowToast('Please enter the Admin Name.');
       return;
     }
-    if (!isValidIndianMobile(cleanPhone)) {
-      onShowToast('Enter a valid 10-digit mobile starting with 6, 7, 8, or 9.');
+    if (!check.valid) {
+      setEmailError(check.error);
+      onShowToast(check.error);
       return;
     }
-    if (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      onShowToast('Enter a valid Google Email address or leave it blank.');
-      return;
-    }
-    if (admins.some((a) => normalizeIndianMobile(a.phone) === cleanPhone)) {
-      onShowToast('This mobile number is already registered as a Campus Admin.');
-      return;
-    }
-    if (cleanEmail && admins.some((a) => (a.email || '').toLowerCase() === cleanEmail)) {
-      onShowToast('This Google Email is already registered as a Campus Admin.');
+    if (admins.some((a) => (a.email || '').toLowerCase() === check.email)) {
+      const msg = 'This Google ID is already registered as a Campus Admin.';
+      setEmailError(msg);
+      onShowToast(msg);
       return;
     }
 
-    await onAddAdmin({
-      zone: 'ADMIN',
-      unit: 'Campus Admin',
-      name,
-      phone: cleanPhone,
-      ...(cleanEmail ? { email: cleanEmail } : {}),
-      pin,
-      pinMustChange: true,
-      pinResetRequested: false,
-    });
-    setNewName('');
-    setNewPhone('');
-    setNewEmail('');
-    setOpenSection('none');
-    onShareCredentials(name, cleanPhone, pin);
+    setEmailError('');
+    setAddingAdmin(true);
+    try {
+      await onAddAdmin({
+        zone: 'ADMIN',
+        unit: 'Campus Admin',
+        name,
+        email: check.email,
+        phone: '',
+        pin: '',
+        pinMustChange: false,
+        pinResetRequested: false,
+      });
+      setNewName('');
+      setNewEmail('');
+      setOpenSection('none');
+      onShowToast(`${name} (${check.email}) added to Approved Admins.`);
+    } catch (err) {
+      onShowToast(err instanceof Error ? err.message : 'Could not add Campus Admin.');
+    } finally {
+      setAddingAdmin(false);
+    }
   };
 
   const handleSaveEdit = async (id: string) => {
     const name = editName.trim();
-    const cleanPhone = normalizeIndianMobile(editPhone);
-    const cleanEmail = editEmail.trim().toLowerCase();
+    const check = validateGoogleAdminEmail(editEmail);
     if (!name) {
       onShowToast('Please enter the Admin Name.');
       return;
     }
-    if (!isValidIndianMobile(cleanPhone)) {
-      onShowToast('Enter a valid 10-digit mobile starting with 6, 7, 8, or 9.');
+    if (!check.valid) {
+      setEditEmailError(check.error);
+      onShowToast(check.error);
       return;
     }
-    if (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      onShowToast('Enter a valid Google Email address or leave it blank.');
+    if (admins.some((a) => a.id !== id && (a.email || '').toLowerCase() === check.email)) {
+      const msg = 'Another Approved Admin already uses this Google ID.';
+      setEditEmailError(msg);
+      onShowToast(msg);
       return;
     }
-    if (admins.some((a) => a.id !== id && normalizeIndianMobile(a.phone) === cleanPhone)) {
-      onShowToast('Another Approved Admin already uses this mobile number.');
-      return;
-    }
-    if (cleanEmail && admins.some((a) => a.id !== id && (a.email || '').toLowerCase() === cleanEmail)) {
-      onShowToast('Another Approved Admin already uses this Google Email.');
-      return;
-    }
-    await onUpdateAdmin(id, name, cleanPhone, cleanEmail || undefined);
+    setEditEmailError('');
+    await onUpdateAdmin(id, name, check.email);
     setEditingId(null);
     onShowToast(`Updated ${name}'s details.`);
   };
@@ -266,31 +252,30 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                     value={editName}
                     onChange={(e) => setEditName(formatTitleCaseValue(e.target.value))}
                     placeholder="Name *"
+                    aria-label="Admin Name"
                     className="w-full min-h-[42px] bg-white border border-indigo-200 rounded-xl px-3.5 py-2 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
-                  <input
-                    type="tel"
-                    inputMode="numeric"
-                    maxLength={16}
-                    value={editPhone}
-                    onChange={(e) => {
-                      const cleaned = normalizeIndianMobile(e.target.value);
-                      if (cleaned.length > 0 && !/^[6-9]/.test(cleaned)) {
-                        setEditPhone('');
-                        return;
-                      }
-                      setEditPhone(displayIndianMobile(cleaned));
-                    }}
-                    placeholder="Mobile *"
-                    className="w-full min-h-[42px] bg-white border border-indigo-200 rounded-xl px-3.5 py-2 text-sm font-bold font-mono-tabular focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
-                  <input
-                    type="email"
-                    value={editEmail}
-                    onChange={(e) => setEditEmail(e.target.value)}
-                    placeholder="Google Email (for Continue with Google)"
-                    className="w-full min-h-[42px] bg-white border border-indigo-200 rounded-xl px-3.5 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  />
+                  <div className="space-y-1">
+                    <input
+                      type="email"
+                      value={editEmail}
+                      onChange={(e) => {
+                        setEditEmail(e.target.value);
+                        if (editEmailError) setEditEmailError('');
+                      }}
+                      placeholder="Google ID * (Gmail, Googlemail, or Google domain)"
+                      aria-label="Admin Google ID"
+                      aria-invalid={Boolean(editEmailError)}
+                      className={`w-full min-h-[42px] bg-white border rounded-xl px-3.5 py-2 text-sm font-medium focus:outline-none focus:ring-2 ${
+                        editEmailError
+                          ? 'border-rose-400 focus:ring-rose-500'
+                          : 'border-indigo-200 focus:ring-indigo-500'
+                      }`}
+                    />
+                    {editEmailError && (
+                      <p className="text-[11px] font-semibold text-rose-600 px-1">{editEmailError}</p>
+                    )}
+                  </div>
                   <div className="grid grid-cols-2 gap-2 pt-1">
                     <button
                       type="button"
@@ -301,7 +286,10 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                     </button>
                     <button
                       type="button"
-                      onClick={() => setEditingId(null)}
+                      onClick={() => {
+                        setEditingId(null);
+                        setEditEmailError('');
+                      }}
                       className="min-h-[40px] py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition"
                     >
                       Cancel
@@ -312,29 +300,16 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                 <div key={a.id} className="p-4 bg-white space-y-3 text-sm">
                   <div className="space-y-0.5">
                     <p className="font-bold text-base text-slate-900 break-words">{a.name}</p>
-                    <p className="text-xs font-medium font-mono-tabular text-slate-600">
-                      {displayIndianMobile(a.phone)}
-                    </p>
-                    {a.email && (
-                      <p className="text-xs font-medium text-indigo-700 break-all">{a.email}</p>
-                    )}
+                    <p className="text-xs font-medium text-indigo-700 break-all">{a.email}</p>
                   </div>
-                  <div className="grid grid-cols-3 gap-2 pt-2.5 border-t border-slate-100">
-                    <button
-                      type="button"
-                      onClick={() => onResetUserPin(a)}
-                      className="min-h-[40px] py-2 px-2 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 text-xs font-bold transition inline-flex items-center justify-center gap-1"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5" />
-                      <span>Reset PIN</span>
-                    </button>
+                  <div className="grid grid-cols-2 gap-2 pt-2.5 border-t border-slate-100">
                     <button
                       type="button"
                       onClick={() => {
                         setEditingId(a.id);
                         setEditName(a.name);
-                        setEditPhone(displayIndianMobile(a.phone));
                         setEditEmail(a.email || '');
+                        setEditEmailError('');
                       }}
                       className="min-h-[40px] py-2 px-2 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 text-xs font-bold transition inline-flex items-center justify-center gap-1"
                     >
@@ -346,7 +321,7 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
                       onClick={() =>
                         onRequestConfirm({
                           title: 'Delete Approved Admin',
-                          message: `Delete ${a.name} (${displayIndianMobile(a.phone)}) from Approved Admins?`,
+                          message: `Delete ${a.name} (${a.email}) from Approved Admins?`,
                           onConfirm: () => onDeleteAdmin(a.id),
                         })
                       }
@@ -385,7 +360,7 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
             <div>
               <h3 className="font-bold text-slate-900 text-base">Add Admin</h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                Auto-generates & shares a 4-digit temporary PIN
+                Gmail, Googlemail, or Google custom domain IDs only
               </p>
             </div>
             <button
@@ -401,37 +376,37 @@ export const SuperAdminView: React.FC<SuperAdminViewProps> = ({
               type="text"
               value={newName}
               onChange={(e) => setNewName(formatTitleCaseValue(e.target.value))}
-              placeholder="Name * (e.g., S. K. Banerjee)"
+              placeholder="Name *"
+              aria-label="Admin Name"
               className="w-full min-h-[44px] bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold placeholder:font-normal focus:outline-none focus:ring-2 focus:ring-indigo-500"
             />
-            <input
-              type="tel"
-              inputMode="numeric"
-              maxLength={16}
-              value={newPhone}
-              onChange={(e) => {
-                const cleaned = normalizeIndianMobile(e.target.value);
-                if (cleaned.length > 0 && !/^[6-9]/.test(cleaned)) {
-                  setNewPhone('');
-                  return;
-                }
-                setNewPhone(displayIndianMobile(cleaned));
-              }}
-              placeholder="Mobile *"
-              className="w-full min-h-[44px] bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-bold font-mono-tabular placeholder:font-sans placeholder:font-normal focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            />
-            <input
-              type="email"
-              value={newEmail}
-              onChange={(e) => setNewEmail(e.target.value)}
-              placeholder="Google Email (optional — for Google Sign-In)"
-              className="w-full min-h-[44px] bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-medium placeholder:font-normal focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            />
+            <div className="space-y-1">
+              <input
+                type="email"
+                value={newEmail}
+                onChange={(e) => {
+                  setNewEmail(e.target.value);
+                  if (emailError) setEmailError('');
+                }}
+                placeholder="Google ID * (Gmail, Googlemail, or Google domain)"
+                aria-label="Google ID"
+                aria-invalid={Boolean(emailError)}
+                className={`w-full min-h-[44px] bg-slate-50 border rounded-xl px-3.5 py-2.5 text-sm font-medium placeholder:font-normal focus:outline-none focus:ring-2 ${
+                  emailError
+                    ? 'border-rose-400 focus:ring-rose-500'
+                    : 'border-slate-200 focus:ring-indigo-500'
+                }`}
+              />
+              {emailError && (
+                <p className="text-[11px] font-semibold text-rose-600 px-1">{emailError}</p>
+              )}
+            </div>
             <button
               type="submit"
-              className="w-full min-h-[46px] bg-indigo-900 hover:bg-indigo-950 text-white font-bold text-sm py-3 px-4 rounded-xl shadow-md transition"
+              disabled={addingAdmin}
+              className="w-full min-h-[46px] bg-indigo-900 hover:bg-indigo-950 disabled:opacity-60 text-white font-bold text-sm py-3 px-4 rounded-xl shadow-md transition"
             >
-              Add Admin
+              {addingAdmin ? 'Adding Admin...' : 'Add Admin'}
             </button>
           </div>
         </form>

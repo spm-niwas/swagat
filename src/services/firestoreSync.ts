@@ -131,6 +131,7 @@ export async function signOutFirebase(): Promise<void> {
 }
 
 export interface ResolvedFirebaseUser {
+  authorized: boolean;
   role: RoleType;
   isAdmin: boolean;
   isGuard: boolean;
@@ -142,10 +143,40 @@ export interface ResolvedFirebaseUser {
 
 export async function ensureAndResolveFirebaseUser(user: User): Promise<ResolvedFirebaseUser> {
   const email = (user.email || '').trim().toLowerCase();
-  const displayName = (user.displayName || email.split('@')[0] || 'Campus User').trim().slice(0, 100);
-  const isSuperAdmin = email === SUPERADMIN_EMAIL;
+  const displayName = (user.displayName || email.split('@')[0] || 'Campus Admin').trim().slice(0, 100);
+  const emailVerified = user.emailVerified !== false;
+  const isSuperAdmin = emailVerified && email === SUPERADMIN_EMAIL;
 
-  // Check if user profile exists
+  let isApprovedAdmin = false;
+  let approvedAdminName = '';
+  if (!isSuperAdmin && emailVerified && email) {
+    try {
+      const approvedSnap = await getDoc(doc(db, 'approvedAdmins', makeEmailKey(email)));
+      if (approvedSnap.exists()) {
+        isApprovedAdmin = true;
+        approvedAdminName = String(approvedSnap.data()?.name || '').trim();
+      }
+    } catch {
+      isApprovedAdmin = false;
+    }
+  }
+
+  if (!isSuperAdmin && !isApprovedAdmin) {
+    return {
+      authorized: false,
+      role: 'host',
+      isAdmin: false,
+      isGuard: false,
+      name: displayName,
+      email,
+      phone: '',
+      allowedUnits: [],
+    };
+  }
+
+  const role: RoleType = isSuperAdmin ? 'superadmin' : 'admin';
+  const resolvedName = (isSuperAdmin ? 'Director SPM NIWAS' : approvedAdminName || displayName).slice(0, 100);
+
   const userRef = doc(db, 'users', user.uid);
   let profileData: Record<string, unknown> | null = null;
   try {
@@ -155,86 +186,13 @@ export async function ensureAndResolveFirebaseUser(user: User): Promise<Resolved
     handleFirestoreError(err, OperationType.GET, `users/${user.uid}`);
   }
 
-  // Check admin, approvedAdmins, & guard role collections
-  let hasAdminDoc = false;
-  let hasGuardDoc = false;
-  let approvedAdminName = '';
-  try {
-    const adminSnap = await getDoc(doc(db, 'admins', user.uid));
-    hasAdminDoc = adminSnap.exists();
-  } catch {
-    hasAdminDoc = false;
-  }
-  if (!isSuperAdmin && !hasAdminDoc && email) {
-    try {
-      const approvedSnap = await getDoc(doc(db, 'approvedAdmins', makeEmailKey(email)));
-      if (approvedSnap.exists()) {
-        hasAdminDoc = true;
-        approvedAdminName = String(approvedSnap.data()?.name || '');
-        try {
-          await setDoc(doc(db, 'admins', user.uid), {
-            uid: user.uid,
-            email,
-            name: (approvedAdminName || displayName).slice(0, 100),
-            createdAt: serverTimestamp(),
-          });
-        } catch {
-          // Non-fatal: approvedAdmins doc already grants admin access via rules
-        }
-      }
-    } catch {
-      // ignore if not approved
-    }
-  }
-  try {
-    const guardSnap = await getDoc(doc(db, 'guards', user.uid));
-    hasGuardDoc = guardSnap.exists();
-  } catch {
-    hasGuardDoc = false;
-  }
-
-  let matchedDirEntries: DirectoryEntry[] = [];
-  if (!isSuperAdmin && !hasAdminDoc) {
-    try {
-      const byUid = await getDocs(
-        query(collection(db, 'directory'), where('uid', '==', user.uid))
-      );
-      matchedDirEntries = byUid.docs.map((d) => ({
-        id: d.id,
-        ...(d.data() as Omit<DirectoryEntry, 'id'>),
-      }));
-      if (matchedDirEntries.length === 0 && email) {
-        const byEmail = await getDocs(
-          query(collection(db, 'directory'), where('email', '==', email))
-        );
-        matchedDirEntries = byEmail.docs.map((d) => ({
-          id: d.id,
-          ...(d.data() as Omit<DirectoryEntry, 'id'>),
-        }));
-      }
-    } catch {
-      matchedDirEntries = [];
-    }
-  }
-
-  let role: RoleType = 'host';
-  if (isSuperAdmin) role = 'superadmin';
-  else if (hasAdminDoc || matchedDirEntries.some((d) => d.zone === 'ADMIN')) role = 'admin';
-  else if (hasGuardDoc || matchedDirEntries.some((d) => d.zone === 'GUARD')) role = 'guard';
-
-  const phone = matchedDirEntries[0]?.phone || String(profileData?.phone || '') || '';
-  const allowedUnits = matchedDirEntries
-    .filter((d) => d.zone === 'OFFICE' || d.zone === 'RESIDENTIAL')
-    .map(formatDirectoryLabel);
-
   if (!profileData) {
     try {
       await setDoc(userRef, {
         uid: user.uid,
         email: email || `${user.uid}@spmniwas.local`,
-        displayName: (approvedAdminName || displayName).slice(0, 100),
-        role: isSuperAdmin ? 'superadmin' : hasAdminDoc ? 'admin' : 'host',
-        phone: phone.slice(0, 20),
+        displayName: resolvedName,
+        role,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
@@ -244,13 +202,14 @@ export async function ensureAndResolveFirebaseUser(user: User): Promise<Resolved
   }
 
   return {
+    authorized: true,
     role,
-    isAdmin: role === 'superadmin' || role === 'admin',
-    isGuard: role === 'guard',
-    name: matchedDirEntries[0]?.name || approvedAdminName || displayName,
+    isAdmin: true,
+    isGuard: false,
+    name: resolvedName,
     email,
-    phone,
-    allowedUnits,
+    phone: '',
+    allowedUnits: [],
   };
 }
 
@@ -349,16 +308,6 @@ export async function seedInitialFirestoreIfNeeded(user: User): Promise<void> {
       name: 'Neha Kapoor',
       phone: '9866677788',
       pin: '8888',
-      pinMustChange: false,
-      pinResetRequested: false,
-    },
-    {
-      id: 'dir_admin_1',
-      zone: 'ADMIN',
-      unit: 'Management Office',
-      name: 'SPM NIWAS Admin',
-      phone: '9999999999',
-      pin: '9999',
       pinMustChange: false,
       pinResetRequested: false,
     },
@@ -514,6 +463,7 @@ export function subscribeFirestoreCampusState(
         (snap) => {
           const entries: DirectoryEntry[] = snap.docs
             .map((d) => ({ id: d.id, ...(d.data() as Omit<DirectoryEntry, 'id'>) }))
+            .filter((d) => !(d.zone === 'ADMIN' && !d.email))
             .sort((a, b) => a.unit.localeCompare(b.unit));
           onState({ directory: entries });
         },
@@ -715,27 +665,32 @@ export async function fsCreateDirectoryEntries(
   for (const item of entries) {
     if (item.zone === 'SUPERADMIN') continue;
     const id = makeRecordId('dir');
-    const cleanPhone = (normalizeIndianMobile(item.phone) || String(item.phone)).slice(0, 120);
-    const cleanPin = /^\d{4}$/.test(String(item.pin))
-      ? String(item.pin)
-      : String(Math.floor(1000 + Math.random() * 9000));
+    const isAdminEntry = item.zone === 'ADMIN';
+    const cleanPhone = isAdminEntry
+      ? ''
+      : (normalizeIndianMobile(item.phone) || String(item.phone || '')).slice(0, 120);
+    const cleanPin = isAdminEntry
+      ? ''
+      : /^\d{4}$/.test(String(item.pin))
+        ? String(item.pin)
+        : String(Math.floor(1000 + Math.random() * 9000));
+    const cleanEmail = item.email ? item.email.trim().toLowerCase().slice(0, 120) : '';
     const docData: Record<string, unknown> = {
       zone: item.zone,
       unit: String(item.unit || '').trim().slice(0, 100),
       name: String(item.name).trim().slice(0, 100),
       phone: cleanPhone,
       pin: cleanPin,
-      pinMustChange: Boolean(item.pinMustChange),
-      pinResetRequested: Boolean(item.pinResetRequested),
+      pinMustChange: isAdminEntry ? false : Boolean(item.pinMustChange),
+      pinResetRequested: isAdminEntry ? false : Boolean(item.pinResetRequested),
       isFamilyMember: Boolean(item.isFamilyMember),
       isPrimaryHost: Boolean(item.isPrimaryHost),
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
-    if (item.email) {
-      const cleanEmail = item.email.trim().toLowerCase().slice(0, 120);
+    if (cleanEmail) {
       docData.email = cleanEmail;
-      if (item.zone === 'ADMIN' && cleanEmail) {
+      if (isAdminEntry) {
         batch.set(doc(db, 'approvedAdmins', makeEmailKey(cleanEmail)), {
           email: cleanEmail,
           name: String(docData.name),
@@ -765,12 +720,12 @@ export async function fsCreateDirectoryEntries(
       zone: item.zone,
       unit: String(docData.unit),
       name: String(docData.name),
-      email: item.email,
+      email: cleanEmail || undefined,
       uid: item.uid,
       phone: cleanPhone,
       pin: cleanPin,
-      pinMustChange: Boolean(item.pinMustChange),
-      pinResetRequested: Boolean(item.pinResetRequested),
+      pinMustChange: Boolean(docData.pinMustChange),
+      pinResetRequested: Boolean(docData.pinResetRequested),
       isFamilyMember: Boolean(item.isFamilyMember),
       isPrimaryHost: Boolean(item.isPrimaryHost),
     });
@@ -858,7 +813,7 @@ export async function fsUpdateUserPinByPhone(
     let updated = 0;
     for (const d of snap.docs) {
       const data = d.data();
-      if (data.zone === 'SUPERADMIN') continue;
+      if (data.zone === 'SUPERADMIN' || data.zone === 'ADMIN') continue;
       const docPhone = String(data.phone || '');
       if (normalizeIndianMobile(docPhone) === cleanPhone) {
         updated++;

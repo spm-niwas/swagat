@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  ArrowRight,
   Building,
   Check,
   ChevronDown,
@@ -30,13 +29,12 @@ import {
   normalizeIndianMobile,
 } from '../utils/formatters';
 import { generateSecurityBriefingApi } from '../services/api';
+import { MobileInput } from './MobileInput';
 
 interface AdminViewProps {
-  session: UserSession | null;
   visitors: VisitorRecord[];
   directory: DirectoryEntry[];
   housingUnits: string[];
-  onOpenPersonalHostView: () => void;
   onAddDirectoryEntries: (entries: Array<Omit<DirectoryEntry, 'id'>>) => Promise<void>;
   onAddHousingUnits: (unitsText: string) => Promise<{ added: string[] }>;
   onDeleteHousingUnit: (unit: string) => Promise<void>;
@@ -61,16 +59,13 @@ interface ConsolidatedUser {
   officeRec: DirectoryEntry | null;
   resRecs: DirectoryEntry[];
   guardRec: DirectoryEntry | null;
-  adminRec: DirectoryEntry | null;
-  category: 'OFFICE' | 'OFFICE_RES' | 'GUARD' | 'ADMIN';
+  category: 'OFFICE' | 'OFFICE_RES' | 'GUARD';
 }
 
 export const AdminView: React.FC<AdminViewProps> = ({
-  session,
   visitors,
   directory,
   housingUnits,
-  onOpenPersonalHostView,
   onAddDirectoryEntries,
   onAddHousingUnits,
   onDeleteHousingUnit,
@@ -92,6 +87,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [newName, setNewName] = useState('');
   const [newPhone, setNewPhone] = useState('');
   const [phoneError, setPhoneError] = useState('');
+  const [savingUser, setSavingUser] = useState(false);
 
   // Housing Units State
   const [housingTab, setHousingTab] = useState<'tag' | 'tagged' | 'houses'>('tag');
@@ -129,17 +125,12 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const resInside = visitors.filter((v) => v.zone === 'RESIDENTIAL' && v.status === 'APPROVED').length;
   const pendingCount = visitors.filter((v) => v.status === 'PENDING').length;
 
-  const adminUnits = session?.role === 'admin' && session.allowedUnits ? session.allowedUnits : [];
-  const adminPendingCount = visitors.filter(
-    (v) => v.status === 'PENDING' && adminUnits.some((u) => isSameUnit(v.destination, u))
-  ).length;
-
-  // Consolidate directory entries by phone
+  // Consolidate Mobile+PIN directory entries by phone (exclude Google-only Super Admin & Admins)
   const consolidated: ConsolidatedUser[] = (() => {
     const groupedMap = new Map<string, Omit<ConsolidatedUser, 'category'>>();
     directory.forEach((d) => {
-      if (d.zone === 'SUPERADMIN') return;
-      const key = `${d.zone === 'ADMIN' ? 'ADMIN_' : 'USER_'}${d.phone}`;
+      if (d.zone === 'SUPERADMIN' || d.zone === 'ADMIN') return;
+      const key = `USER_${d.phone}`;
       if (!groupedMap.has(key)) {
         groupedMap.set(key, {
           primaryId: d.id,
@@ -151,7 +142,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
           officeRec: null,
           resRecs: [],
           guardRec: null,
-          adminRec: null,
         });
       }
       const g = groupedMap.get(key)!;
@@ -159,13 +149,11 @@ export const AdminView: React.FC<AdminViewProps> = ({
       if (d.zone === 'OFFICE') g.officeRec = d;
       else if (d.zone === 'RESIDENTIAL') g.resRecs.push(d);
       else if (d.zone === 'GUARD') g.guardRec = d;
-      else if (d.zone === 'ADMIN') g.adminRec = d;
     });
 
     return Array.from(groupedMap.values()).map((g) => {
       let category: ConsolidatedUser['category'] = 'OFFICE';
-      if (g.adminRec) category = 'ADMIN';
-      else if (g.guardRec) category = 'GUARD';
+      if (g.guardRec) category = 'GUARD';
       else if ((g.officeRec && g.resRecs.length > 0) || g.resRecs.length > 0) category = 'OFFICE_RES';
       return { ...g, category };
     });
@@ -202,8 +190,8 @@ export const AdminView: React.FC<AdminViewProps> = ({
       return;
     }
     if (!isValidIndianMobile(cleanPhone)) {
-      setPhoneError('Enter a valid 10-digit mobile number starting with 6, 7, 8, or 9.');
-      onShowToast('Enter a valid 10-digit mobile starting with 6, 7, 8, or 9.');
+      setPhoneError('Enter a valid 10-digit Mobile starting with 6, 7, 8, or 9.');
+      onShowToast('Enter a valid 10-digit Mobile starting with 6, 7, 8, or 9.');
       return;
     }
     if (newCategory === 'OFFICE' && !officeUnit) {
@@ -234,14 +222,21 @@ export const AdminView: React.FC<AdminViewProps> = ({
       });
     }
 
-    await onAddDirectoryEntries(recordsToCreate);
-    setNewOfficeUnit('');
-    setNewName('');
-    setNewPhone('');
-    setPhoneError('');
-    setOpenSection('users');
-    setUsersTab('added');
-    onShareCredentials(name, cleanPhone, pin);
+    setSavingUser(true);
+    try {
+      await onAddDirectoryEntries(recordsToCreate);
+      setNewOfficeUnit('');
+      setNewName('');
+      setNewPhone('');
+      setPhoneError('');
+      setOpenSection('users');
+      setUsersTab('added');
+      onShareCredentials(name, cleanPhone, pin);
+    } catch (err) {
+      onShowToast(err instanceof Error ? err.message : 'Could not register user.');
+    } finally {
+      setSavingUser(false);
+    }
   };
 
   const handleAddHousesSubmit = async (e: React.FormEvent) => {
@@ -329,32 +324,6 @@ export const AdminView: React.FC<AdminViewProps> = ({
     <section className="space-y-4 w-full">
       {/* Overview Section */}
       <div className="space-y-4">
-        {adminUnits.length > 0 && (
-          <div className="bg-gradient-to-r from-indigo-900 to-slate-900 text-white rounded-2xl p-4 shadow-md flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs font-bold text-amber-300">My Personal Unit</span>
-                {adminPendingCount > 0 && (
-                  <span className="text-xs font-bold text-amber-200">
-                    · {adminPendingCount} Waiting
-                  </span>
-                )}
-              </div>
-              <p className="text-xs font-semibold text-slate-200 truncate mt-0.5">
-                {adminUnits.join(' · ')}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={onOpenPersonalHostView}
-              className="min-h-[40px] bg-white hover:bg-amber-50 text-slate-900 font-bold text-xs px-3.5 py-2 rounded-xl shadow shrink-0 transition inline-flex items-center gap-1"
-            >
-              <span>Manage</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
-
         {/* Live Campus Headcount + AI Security Briefing */}
         <div className="space-y-2.5">
           <div className="grid grid-cols-3 gap-2.5">
@@ -548,50 +517,22 @@ export const AdminView: React.FC<AdminViewProps> = ({
                     className="w-full min-h-[44px] bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
 
-                  <div className="space-y-1">
-                    <input
-                      type="tel"
-                      inputMode="numeric"
-                      value={newPhone}
-                      onChange={(e) => {
-                        const cleaned = normalizeIndianMobile(e.target.value);
-                        if (cleaned.length > 0 && !/^[6-9]/.test(cleaned)) {
-                          setPhoneError('Mobile number must start with 6, 7, 8, or 9.');
-                          return;
-                        }
-                        setNewPhone(displayIndianMobile(cleaned));
-                        if (cleaned.length === 10 || cleaned.length === 0) {
-                          setPhoneError('');
-                        } else if (phoneError) {
-                          setPhoneError('');
-                        }
-                      }}
-                      onBlur={() => {
-                        const cleaned = normalizeIndianMobile(newPhone);
-                        if (cleaned.length > 0 && !isValidIndianMobile(cleaned)) {
-                          setPhoneError('Enter 10 digits starting with 6, 7, 8, or 9.');
-                        }
-                      }}
-                      placeholder="Mobile *"
-                      aria-invalid={Boolean(phoneError)}
-                      className={`w-full min-h-[44px] bg-white border rounded-xl px-3.5 py-2.5 text-sm font-semibold font-mono-tabular placeholder:font-sans placeholder:font-normal focus:outline-none focus:ring-2 ${
-                        phoneError
-                          ? 'border-rose-400 focus:ring-rose-500'
-                          : 'border-slate-200 focus:ring-blue-500'
-                      }`}
-                    />
-                    {phoneError && (
-                      <p className="text-[11px] font-semibold text-rose-600 px-1">
-                        {phoneError}
-                      </p>
-                    )}
-                  </div>
+                  <MobileInput
+                    value={newPhone}
+                    onChange={(formatted) => setNewPhone(formatted)}
+                    placeholder="Mobile *"
+                    ariaLabel="Mobile"
+                    externalError={phoneError}
+                    onErrorChange={(err) => setPhoneError(err)}
+                    className="w-full min-h-[44px] bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold font-mono-tabular placeholder:font-sans placeholder:font-normal focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
 
                   <button
                     type="submit"
-                    className="w-full min-h-[46px] bg-blue-600 hover:bg-blue-700 text-white font-bold text-sm py-3 px-4 rounded-xl shadow-sm transition"
+                    disabled={savingUser}
+                    className="w-full min-h-[46px] bg-blue-600 hover:bg-blue-700 disabled:opacity-60 text-white font-bold text-sm py-3 px-4 rounded-xl shadow-sm transition"
                   >
-                    Register User
+                    {savingUser ? 'Registering...' : 'Register User'}
                   </button>
                 </div>
               </form>
@@ -605,20 +546,15 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   </p>
                 ) : (
                   consolidated.map((item) => {
-                    const canDelete =
-                      item.category !== 'ADMIN' || session?.role === 'superadmin';
                     const categoryLabelMap: Record<ConsolidatedUser['category'], { label: string; cls: string }> = {
-                      ADMIN: { label: 'Campus Admin', cls: 'text-indigo-700' },
                       GUARD: { label: 'Security Guard', cls: 'text-amber-800' },
                       OFFICE_RES: { label: 'Office with Residence', cls: 'text-emerald-700' },
                       OFFICE: { label: 'Office Staff', cls: 'text-blue-700' },
                     };
                     const cat = categoryLabelMap[item.category];
-                    const officeLine =
-                      item.adminRec?.unit || item.guardRec?.unit || item.officeRec?.unit || '';
+                    const officeLine = item.guardRec?.unit || item.officeRec?.unit || '';
                     const flatLine = item.resRecs.map((r) => r.unit).join(', ');
-                    const primaryEntry =
-                      item.officeRec || item.resRecs[0] || item.guardRec || item.adminRec;
+                    const primaryEntry = item.officeRec || item.resRecs[0] || item.guardRec;
 
                     return (
                       <div
@@ -672,25 +608,20 @@ export const AdminView: React.FC<AdminViewProps> = ({
                                 <span>Reset PIN</span>
                               </button>
                             )}
-                            {canDelete && (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  onRequestConfirm({
-                                    title: 'Delete User',
-                                    message: `Delete ${item.name} (${displayIndianMobile(item.phone)}) from the campus directory?`,
-                                    onConfirm: () =>
-                                      item.category === 'ADMIN'
-                                        ? onDeleteDirectoryEntry(item.primaryId)
-                                        : onDeleteEmployeeByPhone(item.phone),
-                                  })
-                                }
-                                className="min-h-[34px] px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold transition inline-flex items-center gap-1.5"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                                <span>Delete</span>
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onRequestConfirm({
+                                  title: 'Delete User',
+                                  message: `Delete ${item.name} (${displayIndianMobile(item.phone)}) from the campus directory?`,
+                                  onConfirm: () => onDeleteEmployeeByPhone(item.phone),
+                                })
+                              }
+                              className="min-h-[34px] px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold transition inline-flex items-center gap-1.5"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Delete</span>
+                            </button>
                           </div>
                         </div>
                       </div>
@@ -1140,8 +1071,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
               </p>
             ) : (
               resetRequesters.map((item) => {
-                const primaryEntry =
-                  item.officeRec || item.resRecs[0] || item.guardRec || item.adminRec;
+                const primaryEntry = item.officeRec || item.resRecs[0] || item.guardRec;
                 return (
                   <div
                     key={item.phone}

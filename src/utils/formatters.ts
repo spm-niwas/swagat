@@ -2,6 +2,58 @@ import type { AccessZone, DirectoryEntry, VisitorRecord, UserSession } from '../
 
 export const SUPERADMIN_EMAIL = 'director@spmniwas.in';
 
+const NON_GOOGLE_CONSUMER_DOMAINS = new Set([
+  'yahoo.com',
+  'yahoo.co.in',
+  'yahoo.in',
+  'ymail.com',
+  'rocketmail.com',
+  'outlook.com',
+  'hotmail.com',
+  'hotmail.co.in',
+  'live.com',
+  'msn.com',
+  'icloud.com',
+  'me.com',
+  'mac.com',
+  'aol.com',
+  'rediffmail.com',
+  'zoho.com',
+  'zohomail.in',
+  'proton.me',
+  'protonmail.com',
+  'gmx.com',
+  'yandex.com',
+  'mail.com',
+]);
+
+export function validateGoogleAdminEmail(raw: string): {
+  valid: boolean;
+  email: string;
+  error: string;
+} {
+  const email = String(raw || '').trim().toLowerCase();
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+    return { valid: false, email, error: 'Enter a valid Google ID email address.' };
+  }
+  const domain = email.split('@')[1] || '';
+  if (NON_GOOGLE_CONSUMER_DOMAINS.has(domain)) {
+    return {
+      valid: false,
+      email,
+      error: `"${domain}" is not supported. Use Gmail, Googlemail, or a Google custom domain.`,
+    };
+  }
+  if (email === SUPERADMIN_EMAIL) {
+    return {
+      valid: false,
+      email,
+      error: `${SUPERADMIN_EMAIL} is already the Super Admin account.`,
+    };
+  }
+  return { valid: true, email, error: '' };
+}
+
 export const BASE_VISITOR_CATEGORIES = [
   { value: 'Personal Guest', label: 'Personal Guest' },
   { value: 'Official Visitor', label: 'Official Visitor' },
@@ -28,12 +80,26 @@ export function buildCategoryOptions(includeHouseCategories: boolean) {
 
 export function normalizeIndianMobile(raw: string | undefined | null): string {
   if (!raw) return '';
-  let digits = String(raw).replace(/\D/g, '');
-  if (digits.length > 10 && digits.startsWith('91')) {
+  const trimmed = String(raw).trim();
+  const hasPlus91 = /^\+91[\s\-]*/.test(trimmed);
+  let digits = trimmed.replace(/\D/g, '');
+
+  if (hasPlus91 && digits.startsWith('91')) {
     digits = digits.slice(2);
-  } else if (digits.length === 11 && digits.startsWith('0')) {
-    digits = digits.slice(1);
   }
+
+  // Strip forward 0 trunk prefixes (e.g., 0, 09876543210, 00919876543210)
+  digits = digits.replace(/^0+/, '');
+
+  // Strip forward 91 country code when extra digits follow (e.g., 919876543210)
+  // while preserving genuine 10-digit Indian numbers starting with 91 (e.g., 91234 56789)
+  if (digits.length > 10 && digits.startsWith('91')) {
+    const without91 = digits.slice(2).replace(/^0+/, '');
+    if (/^[6-9]/.test(without91) || without91.length === 10) {
+      digits = without91;
+    }
+  }
+
   return digits.slice(0, 10);
 }
 
@@ -46,6 +112,28 @@ export function displayIndianMobile(raw: string | undefined | null): string {
 
 export function isValidIndianMobile(phone: string): boolean {
   return /^[6-9]\d{9}$/.test(normalizeIndianMobile(phone));
+}
+
+export interface MobileInputResult {
+  formatted: string;
+  digits: string;
+  error: string;
+}
+
+export function processMobileInput(raw: string): MobileInputResult {
+  const digits = normalizeIndianMobile(raw);
+  if (digits.length > 0 && !/^[6-9]/.test(digits)) {
+    return {
+      formatted: '',
+      digits: '',
+      error: 'Mobile must start with 6, 7, 8, or 9.',
+    };
+  }
+  return {
+    formatted: digits ? displayIndianMobile(digits) : '',
+    digits,
+    error: '',
+  };
 }
 
 export function formatTitleCaseValue(val: string): string {

@@ -44,13 +44,9 @@ service cloud.firestore {
 
     function isAdmin() {
       return isSuperAdmin() || (
-        isVerifiedUser() && (
-          exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-          (
-            request.auth.token.email is string &&
-            exists(/databases/$(database)/documents/approvedAdmins/$(emailDocKey(request.auth.token.email)))
-          )
-        )
+        isVerifiedUser() &&
+        request.auth.token.email is string &&
+        exists(/databases/$(database)/documents/approvedAdmins/$(emailDocKey(request.auth.token.email)))
       );
     }
 
@@ -102,7 +98,7 @@ service cloud.firestore {
 
     function isValidDirectoryEntry(data) {
       return data.keys().hasAll([
-          'zone', 'unit', 'name', 'phone', 'pin',
+          'zone', 'unit', 'name',
           'pinMustChange', 'pinResetRequested', 'createdAt', 'updatedAt'
         ]) &&
         data.keys().hasOnly([
@@ -115,8 +111,16 @@ service cloud.firestore {
         data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
         (!('email' in data) || (data.email is string && data.email.size() <= 120)) &&
         (!('uid' in data) || (data.uid is string && data.uid.size() <= 128)) &&
-        data.phone is string && data.phone.size() >= 1 && data.phone.size() <= 120 &&
-        data.pin is string && data.pin.size() == 4 && data.pin.matches('^[0-9]{4}$') &&
+        (
+          data.zone == 'ADMIN' ? (
+            'email' in data && data.email is string && data.email.size() >= 3 && data.email.size() <= 120 &&
+            (!('phone' in data) || (data.phone is string && data.phone.size() <= 120)) &&
+            (!('pin' in data) || (data.pin is string && (data.pin == '' || (data.pin.size() == 4 && data.pin.matches('^[0-9]{4}$')))))
+          ) : (
+            data.phone is string && data.phone.size() >= 1 && data.phone.size() <= 120 &&
+            data.pin is string && data.pin.size() == 4 && data.pin.matches('^[0-9]{4}$')
+          )
+        ) &&
         data.pinMustChange is bool &&
         data.pinResetRequested is bool &&
         (!('isFamilyMember' in data) || data.isFamilyMember is bool) &&
@@ -247,15 +251,12 @@ service cloud.firestore {
     match /users/{userId} {
       allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
       allow list: if isAdmin();
-      allow create: if isVerifiedUser() &&
+      allow create: if isAdmin() &&
         isValidId(userId) &&
         isValidUserProfile(incoming()) &&
         incoming().uid == request.auth.uid &&
         incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time && (
-          isAdmin() ||
-          (isOwner(userId) && incoming().role == 'host')
-        );
+        incoming().updatedAt == request.time;
       allow update: if isVerifiedUser() &&
         isValidId(userId) &&
         isValidUserProfile(incoming()) &&

@@ -68,6 +68,7 @@ import { AdminView } from './components/AdminView';
 import { SuperAdminView } from './components/SuperAdminView';
 import { BottomLeftRoleSwitcher } from './components/BottomLeftRoleSwitcher';
 import {
+  AdminLoginModal,
   ConfirmActionModal,
   ForcePinModal,
   ForgotPinModal,
@@ -75,7 +76,6 @@ import {
   PassModal,
   SettingsModal,
   ShareCredentialsModal,
-  SuperAdminLoginModal,
 } from './components/Modals';
 
 const SESSION_STORAGE_KEY = 'swagat_session_v1';
@@ -111,7 +111,7 @@ export default function App() {
       const raw = localStorage.getItem(SESSION_STORAGE_KEY);
       if (!raw) return null;
       const parsed = JSON.parse(raw) as UserSession;
-      if (parsed.role === 'superadmin') {
+      if (parsed.role === 'superadmin' || parsed.role === 'admin') {
         localStorage.removeItem(SESSION_STORAGE_KEY);
         return null;
       }
@@ -169,7 +169,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [forcePinOpen, setForcePinOpen] = useState(false);
   const [forgotPinOpen, setForgotPinOpen] = useState(false);
-  const [superAdminLoginOpen, setSuperAdminLoginOpen] = useState(false);
+  const [adminLoginOpen, setAdminLoginOpen] = useState(false);
   const [confirmConfig, setConfirmConfig] = useState<ConfirmDialogConfig | null>(null);
   const [sharePayload, setSharePayload] = useState<{
     name: string;
@@ -216,7 +216,7 @@ export default function App() {
       if (active) {
         const msg = formatFirebaseAuthError(err);
         setAuthError(msg);
-        setSuperAdminLoginOpen(true);
+        setAdminLoginOpen(true);
         showToast(msg);
       }
     });
@@ -227,22 +227,23 @@ export default function App() {
       setFirebaseUser(user);
 
       if (user) {
-        const googleEmail = (user.email || '').trim().toLowerCase();
-        if (googleEmail !== SUPERADMIN_EMAIL || user.emailVerified === false) {
-          setLoading(false);
-          setSession((prev) => (prev?.role === 'superadmin' ? null : prev));
-          setAuthError(
-            `Access denied for "${googleEmail || 'this Google account'}". Super Admin login is restricted strictly to ${SUPERADMIN_EMAIL}.`
-          );
-          setSuperAdminLoginOpen(true);
-          return;
-        }
-
         setAuthError(null);
         try {
           const resolved = await ensureAndResolveFirebaseUser(user);
           if (!active) return;
-          if (resolved.isAdmin) {
+          if (!resolved.authorized) {
+            setLoading(false);
+            setSession((prev) =>
+              prev?.role === 'superadmin' || prev?.role === 'admin' ? null : prev
+            );
+            setAuthError(
+              `Access denied for "${resolved.email || 'this Google account'}". Only ${SUPERADMIN_EMAIL} or an Approved Campus Admin Google ID can sign in.`
+            );
+            setAdminLoginOpen(true);
+            return;
+          }
+
+          if (resolved.role === 'superadmin') {
             await seedInitialFirestoreIfNeeded(user);
             if (!active) return;
           }
@@ -252,15 +253,15 @@ export default function App() {
 
           setDevPreviewOverride(false);
           const cloudSession: UserSession = {
-            name: resolved.name || 'Director SPM NIWAS',
-            phone: resolved.phone || SUPERADMIN_EMAIL,
-            email: SUPERADMIN_EMAIL,
-            role: 'superadmin',
-            allowedUnits: resolved.allowedUnits,
+            name: resolved.name,
+            phone: '',
+            email: resolved.email,
+            role: resolved.role,
+            allowedUnits: [],
           };
           setSession(cloudSession);
-          setCurrentRole('superadmin');
-          setSuperAdminLoginOpen(false);
+          setCurrentRole(resolved.role);
+          setAdminLoginOpen(false);
         } catch (err) {
           if (active) {
             setLoading(false);
@@ -317,7 +318,9 @@ export default function App() {
 
   // Enforce 1-week expiration for mobile + PIN sessions
   useEffect(() => {
-    if (!session || session.role === 'superadmin' || devPreviewOverride) return;
+    if (!session || session.role === 'superadmin' || session.role === 'admin' || devPreviewOverride) {
+      return;
+    }
     const expiresAt = session.expiresAt;
     if (typeof expiresAt !== 'number') return;
 
@@ -516,13 +519,12 @@ export default function App() {
 
     const cleanInput = identifier.trim().toLowerCase();
     if (!cleanInput || cleanInput === SUPERADMIN_EMAIL) {
-      showToast(`Super Admin login requires Google Sign-In (${SUPERADMIN_EMAIL}).`);
+      showToast('Admin login requires Google Sign-In via the Admin button below.');
       return false;
     }
 
     const matches = directory.filter((d) => {
-      if (d.zone === 'SUPERADMIN') return false;
-      if ((d.email || '').toLowerCase() === SUPERADMIN_EMAIL) return false;
+      if (d.zone === 'SUPERADMIN' || d.zone === 'ADMIN') return false;
       const idMatch = Boolean(d.phone && d.phone.toLowerCase() === cleanInput);
       return idMatch && d.pin === pin;
     });
@@ -548,9 +550,7 @@ export default function App() {
 
     const primary = matches[0];
     let assignedRole: RoleType = 'host';
-    if (matches.some((m) => m.zone === 'ADMIN')) {
-      assignedRole = 'admin';
-    } else if (matches.some((m) => m.zone === 'GUARD')) {
+    if (matches.some((m) => m.zone === 'GUARD')) {
       assignedRole = 'guard';
     }
 
@@ -631,11 +631,11 @@ export default function App() {
 
   const handlePinLogin = (phone: string, pin: string) => {
     if (!phone || phone.length !== 10 || pin.length !== 4) {
-      showToast('Enter a valid 10-digit mobile (starting with 6–9) & 4-digit PIN.');
+      showToast('Enter a valid 10-digit Mobile (starting with 6–9) & 4-digit PIN.');
       return;
     }
     if (!firebaseUser && directory.length === 0) {
-      showToast('Swagat Cloud is not synced yet. Use Super Admin Login (Google) first on this device.');
+      showToast('Swagat Cloud is not synced yet. Use Admin Google Sign-In first on this device.');
       return;
     }
     authenticateIdentifier(phone, pin);
@@ -699,11 +699,11 @@ export default function App() {
             : ['IT Dept (Floor 2) - Rahul Sharma', 'Flat A-402 - Rahul Sharma'],
       });
     } else if (role === 'admin') {
-      const adminRec = directory.find((d) => d.zone === 'ADMIN');
+      const adminRec = directory.find((d) => d.zone === 'ADMIN' && Boolean(d.email));
       setSession({
         name: adminRec?.name || 'SPM NIWAS Admin',
-        phone: adminRec?.phone || '9999999999',
-        email: '',
+        phone: '',
+        email: adminRec?.email || 'admin@spmniwas.in',
         role: 'admin',
         allowedUnits: [],
       });
@@ -856,10 +856,11 @@ export default function App() {
   };
 
   const handleSelfPinChange = async (oldPin: string, newPin: string) => {
-    if (!session || session.role === 'superadmin') return;
+    if (!session || session.role === 'superadmin' || session.role === 'admin') return;
     const validOld = directory.some(
       (d) =>
         d.zone !== 'SUPERADMIN' &&
+        d.zone !== 'ADMIN' &&
         normalizeIndianMobile(d.phone) === normalizeIndianMobile(session.phone) &&
         d.pin === oldPin
     );
@@ -879,31 +880,52 @@ export default function App() {
     showToast('Your personal PIN has been updated!');
   };
 
-  const handleForcedPinSetup = async (p1: string, p2: string) => {
-    if (!session || session.role === 'superadmin') return;
+  const handleForcedPinSetup = async (p1: string, p2: string): Promise<boolean> => {
+    if (!session || session.role === 'superadmin' || session.role === 'admin') return false;
     if (p1.length !== 4 || p1 !== p2) {
       showToast('Both PIN fields must match (4 digits).');
-      return;
+      return false;
     }
-    await saveUpdatePinByPhone(session.phone, p1, {
-      pinMustChange: false,
-      pinResetRequested: false,
-    });
-    setForcePinOpen(false);
-    showToast('Personal PIN saved!');
+    try {
+      await saveUpdatePinByPhone(session.phone, p1, {
+        pinMustChange: false,
+        pinResetRequested: false,
+      });
+      const cleanSessionPhone = normalizeIndianMobile(session.phone);
+      setDirectory((prev) =>
+        prev.map((d) =>
+          d.zone !== 'SUPERADMIN' &&
+          d.zone !== 'ADMIN' &&
+          normalizeIndianMobile(d.phone) === cleanSessionPhone
+            ? { ...d, pin: p1, pinMustChange: false, pinResetRequested: false }
+            : d
+        )
+      );
+      setForcePinOpen(false);
+      showToast('Personal PIN saved!');
+      return true;
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : 'Could not save PIN. Please check connection and retry.';
+      showToast(msg);
+      throw new Error(msg);
+    }
   };
 
   const handleForgotPinSubmit = async (phone: string) => {
     if (!phone || phone.length !== 10) {
-      showToast('Enter a valid 10-digit mobile starting with 6, 7, 8, or 9.');
+      showToast('Enter a valid 10-digit Mobile starting with 6, 7, 8, or 9.');
       return;
     }
     try {
       if (isCloudMode) {
         const target = directory.find(
-          (d) => d.zone !== 'SUPERADMIN' && normalizeIndianMobile(d.phone) === phone
+          (d) =>
+            d.zone !== 'SUPERADMIN' &&
+            d.zone !== 'ADMIN' &&
+            normalizeIndianMobile(d.phone) === phone
         );
-        if (!target) throw new Error('Mobile number not found in SPM NIWAS directory.');
+        if (!target) throw new Error('Mobile not found in SPM NIWAS directory.');
         await fsUpdateDirectoryEntry(target.id, { pinResetRequested: true });
       } else {
         await requestPinResetApi(phone);
@@ -911,7 +933,7 @@ export default function App() {
       setForgotPinOpen(false);
       showToast('PIN reset request sent to SPM NIWAS Admin!');
     } catch (err) {
-      showToast(err instanceof Error ? err.message : 'Mobile number not found.');
+      showToast(err instanceof Error ? err.message : 'Mobile not found.');
     }
   };
 
@@ -971,7 +993,7 @@ export default function App() {
             attemptHint={attemptHint}
             onPinLogin={handlePinLogin}
             onOpenForgotPin={() => setForgotPinOpen(true)}
-            onOpenSuperAdminLogin={() => setSuperAdminLoginOpen(true)}
+            onOpenAdminLogin={() => setAdminLoginOpen(true)}
           />
         ) : (
           <main className="flex-1 overflow-y-auto no-scrollbar p-4 space-y-4 pb-20">
@@ -1071,11 +1093,9 @@ export default function App() {
 
             {currentRole === 'admin' && (
               <AdminView
-                session={session}
                 visitors={visitors}
                 directory={directory}
                 housingUnits={housingUnits}
-                onOpenPersonalHostView={() => handleSwitchRole('host')}
                 onAddDirectoryEntries={async (entries) => {
                   const resUnits = entries
                     .filter((e) => e.zone === 'RESIDENTIAL' && e.unit.trim())
@@ -1113,15 +1133,13 @@ export default function App() {
                 onAddAdmin={async (entry) => {
                   await saveCreateDirectoryEntries([entry]);
                 }}
-                onUpdateAdmin={async (id, name, phone, email) => {
-                  await saveUpdateDirectoryEntry(id, { name, phone, email: email || '' });
+                onUpdateAdmin={async (id, name, email) => {
+                  await saveUpdateDirectoryEntry(id, { name, email });
                 }}
                 onDeleteAdmin={async (id) => {
                   await saveDeleteDirectoryEntry(id);
                   showToast('Deleted from Approved Admins.');
                 }}
-                onResetUserPin={handleResetUserPin}
-                onShareCredentials={handleShareCredentials}
                 onUpdateLogo={saveUpdateLogo}
                 onUpdateGeofence={saveUpdateGeofence}
                 onRequestConfirm={setConfirmConfig}
@@ -1131,13 +1149,14 @@ export default function App() {
           </main>
         )}
 
-        {/* Toast Notification Banner */}
-        {toastMessage && (
-          <div className="absolute bottom-4 left-4 right-4 bg-slate-900 text-white text-xs font-semibold px-4 py-3 rounded-2xl shadow-xl border border-slate-700 z-50 flex items-center justify-between">
-            <span>{toastMessage}</span>
-          </div>
-        )}
       </div>
+
+      {/* Global Toast Notification Banner (always above modals) */}
+      {toastMessage && (
+        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-[398px] bg-slate-900 text-white text-xs font-semibold px-4 py-3 rounded-2xl shadow-2xl border border-slate-700 z-[70] flex items-center justify-between">
+          <span>{toastMessage}</span>
+        </div>
+      )}
 
       {/* Modals */}
       <PassModal
@@ -1153,7 +1172,14 @@ export default function App() {
         onSelfPinChange={handleSelfPinChange}
       />
 
-      <ForcePinModal open={forcePinOpen} onSubmit={handleForcedPinSetup} />
+      <ForcePinModal
+        open={forcePinOpen}
+        onSubmit={handleForcedPinSetup}
+        onLogout={() => {
+          setForcePinOpen(false);
+          handleLogout();
+        }}
+      />
 
       <ForgotPinModal
         open={forgotPinOpen}
@@ -1161,14 +1187,14 @@ export default function App() {
         onSubmit={handleForgotPinSubmit}
       />
 
-      <SuperAdminLoginModal
-        open={superAdminLoginOpen}
+      <AdminLoginModal
+        open={adminLoginOpen}
         googleLoading={googleLoading}
         firebaseEmail={firebaseUser?.email || null}
         authError={authError}
         onGoogleLogin={handleGoogleLogin}
         onSwitchGoogleAccount={handleSwitchGoogleAccount}
-        onClose={() => setSuperAdminLoginOpen(false)}
+        onClose={() => setAdminLoginOpen(false)}
       />
 
       <ConfirmActionModal config={confirmConfig} onClose={() => setConfirmConfig(null)} />

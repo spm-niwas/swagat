@@ -49,6 +49,7 @@ import {
   type GeneratedQrPassCard,
 } from '../utils/qrPassCard';
 import { QrPassShareModal } from './Modals';
+import { MobileInput } from './MobileInput';
 
 interface HostViewProps {
   session: UserSession | null;
@@ -103,6 +104,7 @@ export const HostView: React.FC<HostViewProps> = ({
   const [qrPassCard, setQrPassCard] = useState<GeneratedQrPassCard | null>(null);
   const [generatingQrCard, setGeneratingQrCard] = useState(false);
   const [sharingQr, setSharingQr] = useState(false);
+  const [addingFamily, setAddingFamily] = useState(false);
   const [passModalPayload, setPassModalPayload] = useState<{
     card: GeneratedQrPassCard;
     visitorName: string;
@@ -208,7 +210,7 @@ export const HostView: React.FC<HostViewProps> = ({
       return;
     }
     if (guestPhone.trim() && !isValidIndianMobile(cleanPhone)) {
-      onShowToast('Enter a valid 10-digit mobile starting with 6, 7, 8, or 9.');
+      onShowToast('Enter a valid 10-digit Mobile starting with 6, 7, 8, or 9.');
       return;
     }
 
@@ -385,28 +387,35 @@ export const HostView: React.FC<HostViewProps> = ({
       return;
     }
     if (!isValidIndianMobile(cleanPhone)) {
-      onShowToast('Enter a valid 10-digit mobile starting with 6–9.');
+      onShowToast('Enter a valid 10-digit Mobile starting with 6, 7, 8, or 9.');
       return;
     }
     if (flatMembers.some((m) => normalizeIndianMobile(m.phone) === cleanPhone)) {
-      onShowToast(`This mobile number is already registered for ${activeResidentialUnit}`);
+      onShowToast(`This Mobile is already registered for ${activeResidentialUnit}`);
       return;
     }
 
-    await onAddFamilyMember({
-      zone: 'RESIDENTIAL',
-      unit: activeResidentialUnit,
-      name,
-      phone: cleanPhone,
-      pin,
-      isFamilyMember: true,
-      pinMustChange: true,
-      pinResetRequested: false,
-    });
-    setFamilyName('');
-    setFamilyPhone('');
-    setFamilyPin('');
-    onShareCredentials(name, cleanPhone, pin);
+    setAddingFamily(true);
+    try {
+      await onAddFamilyMember({
+        zone: 'RESIDENTIAL',
+        unit: activeResidentialUnit,
+        name,
+        phone: cleanPhone,
+        pin,
+        isFamilyMember: true,
+        pinMustChange: true,
+        pinResetRequested: false,
+      });
+      setFamilyName('');
+      setFamilyPhone('');
+      setFamilyPin('');
+      onShareCredentials(name, cleanPhone, pin);
+    } catch (err) {
+      onShowToast(err instanceof Error ? err.message : 'Could not add family member.');
+    } finally {
+      setAddingFamily(false);
+    }
   };
 
   if (subView === 'history') {
@@ -522,7 +531,7 @@ export const HostView: React.FC<HostViewProps> = ({
             <div>
               <h3 className="text-base font-bold text-slate-900">Add Family Member</h3>
               <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
-                They sign in with their own mobile & PIN and receive simultaneous Main Gate alerts for{' '}
+                They sign in with their own Mobile & PIN and receive simultaneous Main Gate alerts for{' '}
                 {activeResidentialUnit}.
               </p>
             </div>
@@ -535,21 +544,11 @@ export const HostView: React.FC<HostViewProps> = ({
                 aria-label="Family Member Name"
                 className="w-full min-h-[44px] bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
               />
-              <input
-                type="tel"
-                inputMode="numeric"
-                maxLength={16}
+              <MobileInput
                 value={familyPhone}
-                onChange={(e) => {
-                  const cleaned = normalizeIndianMobile(e.target.value);
-                  if (cleaned.length > 0 && !/^[6-9]/.test(cleaned)) {
-                    setFamilyPhone('');
-                    return;
-                  }
-                  setFamilyPhone(displayIndianMobile(cleaned));
-                }}
+                onChange={(formatted) => setFamilyPhone(formatted)}
                 placeholder="Mobile"
-                aria-label="Family Member Mobile"
+                ariaLabel="Mobile"
                 className="w-full min-h-[44px] bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-bold font-mono-tabular placeholder:font-sans placeholder:font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:bg-white"
               />
               <div className="flex items-center gap-2">
@@ -573,9 +572,10 @@ export const HostView: React.FC<HostViewProps> = ({
               </div>
               <button
                 type="submit"
-                className="w-full min-h-[46px] bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-sm py-3 rounded-xl shadow-md shadow-indigo-600/20 transition"
+                disabled={addingFamily}
+                className="w-full min-h-[46px] bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white font-bold text-sm py-3 rounded-xl shadow-md shadow-indigo-600/20 transition"
               >
-                Add Family Member
+                {addingFamily ? 'Adding Member...' : 'Add Family Member'}
               </button>
             </div>
           </form>
@@ -809,21 +809,11 @@ export const HostView: React.FC<HostViewProps> = ({
             aria-label="Pre-approved Guest Name"
             className="w-full min-h-[44px] bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white"
           />
-          <input
-            type="tel"
-            inputMode="numeric"
-            maxLength={16}
+          <MobileInput
             value={guestPhone}
-            onChange={(e) => {
-              const cleaned = normalizeIndianMobile(e.target.value);
-              if (cleaned.length > 0 && !/^[6-9]/.test(cleaned)) {
-                setGuestPhone('');
-                return;
-              }
-              setGuestPhone(displayIndianMobile(cleaned));
-            }}
-            placeholder="Phone (Optional — e.g., 98765 43210)"
-            aria-label="Pre-approved Guest Phone"
+            onChange={(formatted) => setGuestPhone(formatted)}
+            placeholder="Mobile (Optional)"
+            ariaLabel="Mobile (Optional)"
             className="w-full min-h-[44px] bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono-tabular placeholder:font-sans focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white"
           />
           <select

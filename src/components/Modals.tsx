@@ -13,6 +13,7 @@ import {
   Send,
   Settings,
   Share2,
+  ShieldCheck,
   X,
 } from 'lucide-react';
 import type {
@@ -33,6 +34,7 @@ import {
   shareQrPassImage,
   type GeneratedQrPassCard,
 } from '../utils/qrPassCard';
+import { MobileInput } from './MobileInput';
 
 /* 1. Digital Zone Pass Modal */
 export const PassModal: React.FC<{
@@ -176,21 +178,35 @@ export const SettingsModal: React.FC<{
           </button>
         </div>
 
-        {session && session.role === 'superadmin' && (
+        {session && (session.role === 'superadmin' || session.role === 'admin') && (
           <div className="bg-amber-50/80 border border-amber-200 rounded-2xl p-3.5 space-y-1">
             <p className="text-xs font-bold text-amber-950 flex items-center gap-1.5">
-              <Crown className="w-3.5 h-3.5 text-amber-600" />
+              {session.role === 'superadmin' ? (
+                <Crown className="w-3.5 h-3.5 text-amber-600" />
+              ) : (
+                <ShieldCheck className="w-3.5 h-3.5 text-indigo-600" />
+              )}
               <span>Google Account Authentication</span>
             </p>
             <p className="text-xs text-amber-900/90 leading-relaxed">
-              Super Admin access is secured exclusively through Google Sign-In ({SUPERADMIN_EMAIL}).
+              {session.role === 'superadmin' ? 'Super Admin' : 'Campus Admin'} access is secured
+              exclusively through Google Sign-In ({session.email || SUPERADMIN_EMAIL}).
             </p>
           </div>
         )}
 
-        {session && session.role !== 'superadmin' && (
+        {session && session.role !== 'superadmin' && session.role !== 'admin' && (
           <form
-            onSubmit={handleSubmit}
+            onSubmit={async (e) => {
+              e.preventDefault();
+              try {
+                await onSelfPinChange(oldPin, newPin);
+                setOldPin('');
+                setNewPin('');
+              } catch {
+                // error toast shown by parent
+              }
+            }}
             className="bg-indigo-50/70 border border-indigo-200 rounded-2xl p-3.5 space-y-2.5"
           >
             <p className="text-xs font-bold text-indigo-950 flex items-center gap-1.5">
@@ -243,18 +259,53 @@ export const SettingsModal: React.FC<{
 /* 3. Forced First-Login Private PIN Setup Modal */
 export const ForcePinModal: React.FC<{
   open: boolean;
-  onSubmit: (pin1: string, pin2: string) => Promise<void>;
-}> = ({ open, onSubmit }) => {
+  onSubmit: (pin1: string, pin2: string) => Promise<boolean>;
+  onLogout?: () => void;
+}> = ({ open, onSubmit, onLogout }) => {
   const [pin1, setPin1] = useState('');
   const [pin2, setPin2] = useState('');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setErrorMsg(null);
+      setSubmitting(false);
+    }
+  }, [open]);
 
   if (!open) return null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    await onSubmit(pin1, pin2);
-    setPin1('');
-    setPin2('');
+    if (pin1.length !== 4) {
+      setErrorMsg('Enter a 4-digit New PIN.');
+      return;
+    }
+    if (pin2.length !== 4) {
+      setErrorMsg('Confirm your 4-digit PIN.');
+      return;
+    }
+    if (pin1 !== pin2) {
+      setErrorMsg('New PIN and Confirm PIN must match.');
+      return;
+    }
+
+    setErrorMsg(null);
+    setSubmitting(true);
+    try {
+      const ok = await onSubmit(pin1, pin2);
+      if (ok) {
+        setPin1('');
+        setPin2('');
+      }
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Could not save PIN. Please check connection and retry.'
+      );
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -279,7 +330,10 @@ export const ForcePinModal: React.FC<{
             maxLength={4}
             autoComplete="off"
             value={pin1}
-            onChange={(e) => setPin1(e.target.value.replace(/[^0-9]/g, '').slice(0, 4))}
+            onChange={(e) => {
+              setPin1(e.target.value.replace(/[^0-9]/g, '').slice(0, 4));
+              if (errorMsg) setErrorMsg(null);
+            }}
             placeholder="New PIN"
             className="pin-mask min-h-[44px] bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-center font-extrabold tracking-widest focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
@@ -289,17 +343,45 @@ export const ForcePinModal: React.FC<{
             maxLength={4}
             autoComplete="off"
             value={pin2}
-            onChange={(e) => setPin2(e.target.value.replace(/[^0-9]/g, '').slice(0, 4))}
+            onChange={(e) => {
+              setPin2(e.target.value.replace(/[^0-9]/g, '').slice(0, 4));
+              if (errorMsg) setErrorMsg(null);
+            }}
             placeholder="Confirm PIN"
             className="pin-mask min-h-[44px] bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-center font-extrabold tracking-widest focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
+
+        {errorMsg && (
+          <div className="rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-xs font-semibold text-rose-700 flex items-center justify-center gap-1.5 text-left">
+            <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+            <span>{errorMsg}</span>
+          </div>
+        )}
+
         <button
           type="submit"
-          className="w-full min-h-[44px] bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs py-3 rounded-xl shadow"
+          disabled={submitting}
+          className="w-full min-h-[44px] bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white font-bold text-xs py-3 rounded-xl shadow transition"
         >
-          Save Private PIN & Continue
+          {submitting ? 'Saving PIN...' : 'Save Private PIN & Continue'}
         </button>
+
+        {onLogout && (
+          <button
+            type="button"
+            disabled={submitting}
+            onClick={() => {
+              setPin1('');
+              setPin2('');
+              setErrorMsg(null);
+              onLogout();
+            }}
+            className="w-full min-h-[40px] bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold text-xs py-2 rounded-xl transition"
+          >
+            Sign Out
+          </button>
+        )}
       </form>
     </div>
   );
@@ -341,24 +423,15 @@ export const ForgotPinModal: React.FC<{
           </button>
         </div>
         <p className="text-xs text-slate-500 leading-relaxed">
-          Enter your registered SPM NIWAS mobile number. An alert will appear on the Admin
-          dashboard to issue you a fresh temporary PIN.
+          Enter your registered SPM NIWAS Mobile. An alert will appear on the Admin dashboard to
+          issue you a fresh temporary PIN.
         </p>
-        <input
-          type="tel"
-          inputMode="numeric"
-          maxLength={16}
+        <MobileInput
           value={phone}
-          onChange={(e) => {
-            const cleaned = normalizeIndianMobile(e.target.value);
-            if (cleaned.length > 0 && !/^[6-9]/.test(cleaned)) {
-              setPhone('');
-              return;
-            }
-            setPhone(displayIndianMobile(cleaned));
-          }}
-          placeholder="98765 43210"
-          className="w-full min-h-[44px] bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-bold font-mono-tabular tracking-wider focus:outline-none focus:ring-2 focus:ring-blue-500"
+          onChange={(formatted) => setPhone(formatted)}
+          placeholder="Mobile"
+          ariaLabel="Mobile"
+          className="w-full min-h-[44px] bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-bold font-mono-tabular tracking-wider placeholder:font-sans placeholder:font-medium placeholder:tracking-normal focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
         <div className="flex gap-2">
           <button
@@ -381,8 +454,8 @@ export const ForgotPinModal: React.FC<{
   );
 };
 
-/* 5. Super Admin Login Modal (Google/Gmail only: director@spmniwas.in) */
-export const SuperAdminLoginModal: React.FC<{
+/* 5. Admin Login Modal (Google Sign-In for Super Admin & Approved Campus Admins) */
+export const AdminLoginModal: React.FC<{
   open: boolean;
   googleLoading?: boolean;
   firebaseEmail?: string | null;
@@ -406,21 +479,21 @@ export const SuperAdminLoginModal: React.FC<{
       <div className="w-full max-w-sm bg-white rounded-3xl p-5 shadow-2xl space-y-3.5">
         <div className="flex items-center justify-between">
           <h3 className="font-bold text-slate-900 text-base flex items-center gap-1.5">
-            <Crown className="w-4 h-4 text-amber-600" />
-            <span>Super Admin Login</span>
+            <ShieldCheck className="w-4 h-4 text-indigo-600" />
+            <span>Admin Login</span>
           </h3>
           <button
             type="button"
             onClick={onClose}
-            aria-label="Close Super Admin Login"
+            aria-label="Close Admin Login"
             className="p-2 rounded-xl bg-slate-100 text-slate-500"
           >
             <X className="w-4 h-4" />
           </button>
         </div>
         <p className="text-xs text-slate-600 leading-relaxed">
-          Sign in with Google using the authorized Director account{' '}
-          <strong className="text-slate-900">{SUPERADMIN_EMAIL}</strong>.
+          Sign in with your authorized Google ID. You will enter the Admin or Super Admin portal
+          assigned to your account.
         </p>
 
         <button
@@ -463,8 +536,8 @@ export const SuperAdminLoginModal: React.FC<{
           <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-xs text-amber-950 space-y-2">
             <p className="leading-relaxed font-medium">
               Connected as <span className="font-bold break-all">{firebaseEmail}</span>. Only{' '}
-              <span className="font-bold">{SUPERADMIN_EMAIL}</span> is permitted for Super Admin
-              access.
+              <span className="font-bold">{SUPERADMIN_EMAIL}</span> or an Approved Campus Admin
+              Google ID can sign in here.
             </p>
             {onSwitchGoogleAccount && (
               <button
