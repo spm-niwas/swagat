@@ -18,10 +18,10 @@ import {
 import type {
   ConfirmDialogConfig,
   DirectoryEntry,
-  UserSession,
   VisitorRecord,
 } from '../types/swagat';
 import {
+  computePhoneHash,
   displayIndianMobile,
   formatTitleCaseValue,
   isSameUnit,
@@ -35,6 +35,7 @@ interface AdminViewProps {
   visitors: VisitorRecord[];
   directory: DirectoryEntry[];
   housingUnits: string[];
+  pinResetPhoneHashes?: string[];
   onAddDirectoryEntries: (entries: Array<Omit<DirectoryEntry, 'id'>>) => Promise<void>;
   onAddHousingUnits: (unitsText: string) => Promise<{ added: string[] }>;
   onDeleteHousingUnit: (unit: string) => Promise<void>;
@@ -66,6 +67,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
   visitors,
   directory,
   housingUnits,
+  pinResetPhoneHashes = [],
   onAddDirectoryEntries,
   onAddHousingUnits,
   onDeleteHousingUnit,
@@ -120,6 +122,40 @@ export const AdminView: React.FC<AdminViewProps> = ({
   // AI Security Briefing
   const [briefingText, setBriefingText] = useState('');
   const [briefingLoading, setBriefingLoading] = useState(false);
+  const [resetHashMatchedPhones, setResetHashMatchedPhones] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    let active = true;
+    if (!pinResetPhoneHashes || pinResetPhoneHashes.length === 0) {
+      setResetHashMatchedPhones(new Set());
+      return;
+    }
+    const targetHashes = new Set(pinResetPhoneHashes);
+    const phones = Array.from(
+      new Set(
+        directory
+          .filter((d) => d.zone !== 'SUPERADMIN' && d.zone !== 'ADMIN' && Boolean(d.phone))
+          .map((d) => normalizeIndianMobile(d.phone))
+          .filter((p) => p.length === 10)
+      )
+    );
+    Promise.all(
+      phones.map(async (p) => ({
+        phone: p,
+        hash: await computePhoneHash(p),
+      }))
+    ).then((results) => {
+      if (!active) return;
+      const matched = new Set<string>();
+      for (const r of results) {
+        if (targetHashes.has(r.hash)) matched.add(r.phone);
+      }
+      setResetHashMatchedPhones(matched);
+    });
+    return () => {
+      active = false;
+    };
+  }, [directory, pinResetPhoneHashes]);
 
   const officeInside = visitors.filter((v) => v.zone === 'OFFICE' && v.status === 'APPROVED').length;
   const resInside = visitors.filter((v) => v.zone === 'RESIDENTIAL' && v.status === 'APPROVED').length;
@@ -130,6 +166,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
     const groupedMap = new Map<string, Omit<ConsolidatedUser, 'category'>>();
     directory.forEach((d) => {
       if (d.zone === 'SUPERADMIN' || d.zone === 'ADMIN') return;
+      const cleanPhone = normalizeIndianMobile(d.phone);
       const key = `USER_${d.phone}`;
       if (!groupedMap.has(key)) {
         groupedMap.set(key, {
@@ -138,14 +175,17 @@ export const AdminView: React.FC<AdminViewProps> = ({
           phone: d.phone,
           pin: d.pin,
           pinMustChange: Boolean(d.pinMustChange),
-          pinResetRequested: Boolean(d.pinResetRequested),
+          pinResetRequested:
+            Boolean(d.pinResetRequested) || resetHashMatchedPhones.has(cleanPhone),
           officeRec: null,
           resRecs: [],
           guardRec: null,
         });
       }
       const g = groupedMap.get(key)!;
-      if (d.pinResetRequested) g.pinResetRequested = true;
+      if (d.pinResetRequested || resetHashMatchedPhones.has(cleanPhone)) {
+        g.pinResetRequested = true;
+      }
       if (d.zone === 'OFFICE') g.officeRec = d;
       else if (d.zone === 'RESIDENTIAL') g.resRecs.push(d);
       else if (d.zone === 'GUARD') g.guardRec = d;

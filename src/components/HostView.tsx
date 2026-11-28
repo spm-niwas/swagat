@@ -227,6 +227,14 @@ export const HostView: React.FC<HostViewProps> = ({
     const now = Date.now();
     const timeLabel = formatTime(now);
 
+    const hostUids = Array.from(
+      new Set(
+        directory
+          .filter((d) => d.zone === zone && isSameUnit(d.unit, destination) && Boolean(d.uid))
+          .map((d) => d.uid as string)
+      )
+    );
+
     await onCreateVisitor({
       visitorName: name,
       visitorPhone: cleanPhone ? displayIndianMobile(cleanPhone) : 'Pre-Approved',
@@ -234,6 +242,7 @@ export const HostView: React.FC<HostViewProps> = ({
       zone,
       destination,
       hostPhone: session?.phone || '',
+      hostUids,
       vehicleNumber: '',
       passCode: otp,
       status: 'PRE_APPROVED',

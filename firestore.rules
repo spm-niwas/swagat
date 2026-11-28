@@ -76,11 +76,12 @@ service cloud.firestore {
 
     function isValidGuardRole(data) {
       return data.keys().hasAll(['uid', 'email', 'name', 'gateUnit', 'createdAt']) &&
-        data.keys().hasOnly(['uid', 'email', 'name', 'gateUnit', 'createdAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'name', 'gateUnit', 'claimProof', 'createdAt']) &&
         isValidId(data.uid) &&
         data.email is string && data.email.size() >= 3 && data.email.size() <= 120 &&
         data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
         data.gateUnit is string && data.gateUnit.size() >= 1 && data.gateUnit.size() <= 80 &&
+        (!('claimProof' in data) || (data.claimProof is string && data.claimProof.size() <= 128)) &&
         data.createdAt is timestamp;
     }
 
@@ -103,6 +104,8 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'zone', 'unit', 'name', 'email', 'uid', 'phone', 'pin',
+          'claimHash', 'phoneHash', 'claimProof',
+          'primaryHostUid', 'primaryHostDirectoryId',
           'pinMustChange', 'pinResetRequested', 'isFamilyMember', 'isPrimaryHost',
           'createdAt', 'updatedAt'
         ]) &&
@@ -111,6 +114,11 @@ service cloud.firestore {
         data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
         (!('email' in data) || (data.email is string && data.email.size() <= 120)) &&
         (!('uid' in data) || (data.uid is string && data.uid.size() <= 128)) &&
+        (!('claimHash' in data) || (data.claimHash is string && data.claimHash.size() <= 128)) &&
+        (!('phoneHash' in data) || (data.phoneHash is string && data.phoneHash.size() <= 128)) &&
+        (!('claimProof' in data) || (data.claimProof is string && data.claimProof.size() <= 200)) &&
+        (!('primaryHostUid' in data) || (data.primaryHostUid is string && data.primaryHostUid.size() <= 128)) &&
+        (!('primaryHostDirectoryId' in data) || (data.primaryHostDirectoryId is string && data.primaryHostDirectoryId.size() <= 128)) &&
         (
           data.zone == 'ADMIN' ? (
             'email' in data && data.email is string && data.email.size() >= 3 && data.email.size() <= 120 &&
@@ -129,14 +137,45 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    function isValidPinCredential(data) {
+      return data.keys().hasAll([
+          'credHash', 'phone', 'phoneHash', 'role', 'name',
+          'directoryIds', 'pinMustChange', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'credHash', 'phone', 'phoneHash', 'role', 'name',
+          'directoryIds', 'pinMustChange', 'createdAt', 'updatedAt'
+        ]) &&
+        data.credHash is string && data.credHash.size() == 64 && data.credHash.matches('^[a-f0-9]{64}$') &&
+        data.phone is string && data.phone.size() == 10 && data.phone.matches('^[6-9][0-9]{9}$') &&
+        data.phoneHash is string && data.phoneHash.size() == 64 && data.phoneHash.matches('^[a-f0-9]{64}$') &&
+        data.role in ['guard', 'host'] &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        data.directoryIds is list && data.directoryIds.size() >= 1 && data.directoryIds.size() <= 20 &&
+        data.directoryIds[0] is string && data.directoryIds[0].size() >= 1 && data.directoryIds[0].size() <= 128 &&
+        data.pinMustChange is bool &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPinResetRequest(data) {
+      return data.keys().hasAll(['phoneHash', 'requestedByUid', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['phoneHash', 'requestedByUid', 'createdAt', 'updatedAt']) &&
+        data.phoneHash is string && data.phoneHash.size() == 64 && data.phoneHash.matches('^[a-f0-9]{64}$') &&
+        isValidId(data.requestedByUid) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
     function isValidDestination(data) {
       return data.keys().hasAll(['zone', 'unit', 'hostName', 'label', 'createdAt']) &&
-        data.keys().hasOnly(['zone', 'unit', 'hostName', 'label', 'hostUid', 'createdAt']) &&
+        data.keys().hasOnly(['zone', 'unit', 'hostName', 'label', 'hostUid', 'primaryHostUid', 'createdAt']) &&
         data.zone in ['OFFICE', 'RESIDENTIAL'] &&
         data.unit is string && data.unit.size() >= 1 && data.unit.size() <= 100 &&
         data.hostName is string && data.hostName.size() >= 1 && data.hostName.size() <= 100 &&
         data.label is string && data.label.size() >= 1 && data.label.size() <= 210 &&
         (!('hostUid' in data) || (data.hostUid is string && data.hostUid.size() <= 128)) &&
+        (!('primaryHostUid' in data) || (data.primaryHostUid is string && data.primaryHostUid.size() <= 128)) &&
         data.createdAt is timestamp;
     }
 
@@ -155,7 +194,7 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'visitorName', 'visitorPhone', 'visitorType', 'zone',
-          'destination', 'hostPhone', 'hostUid', 'createdByUid',
+          'destination', 'hostPhone', 'hostUid', 'hostUids', 'createdByUid',
           'vehicleNumber', 'passCode', 'status', 'timeLabel',
           'createdAt', 'updatedAt'
         ]) &&
@@ -166,6 +205,7 @@ service cloud.firestore {
         data.destination is string && data.destination.size() >= 1 && data.destination.size() <= 200 &&
         (!('hostPhone' in data) || (data.hostPhone is string && data.hostPhone.size() <= 30)) &&
         (!('hostUid' in data) || (data.hostUid is string && data.hostUid.size() <= 128)) &&
+        (!('hostUids' in data) || (data.hostUids is list && data.hostUids.size() <= 20 && (data.hostUids.size() == 0 || (data.hostUids[0] is string && data.hostUids[0].size() <= 128)))) &&
         isValidId(data.createdByUid) &&
         (!('vehicleNumber' in data) || (data.vehicleNumber is string && data.vehicleNumber.size() <= 30)) &&
         data.passCode is string && data.passCode.size() >= 4 && data.passCode.size() <= 8 &&
@@ -233,11 +273,20 @@ service cloud.firestore {
     match /guards/{guardUid} {
       allow get: if isValidId(guardUid) && (isOwner(guardUid) || isAdmin());
       allow list: if isAdmin();
-      allow create: if isAdmin() &&
-        isValidId(guardUid) &&
+      allow create: if isValidId(guardUid) &&
         isValidGuardRole(incoming()) &&
         incoming().uid == guardUid &&
-        incoming().createdAt == request.time;
+        incoming().createdAt == request.time && (
+          isAdmin() ||
+          (
+            isOwner(guardUid) &&
+            'claimProof' in incoming() &&
+            incoming().claimProof is string &&
+            isValidId(incoming().claimProof) &&
+            exists(/databases/$(database)/documents/pinCredentials/$(incoming().claimProof)) &&
+            get(/databases/$(database)/documents/pinCredentials/$(incoming().claimProof)).data.role == 'guard'
+          )
+        );
       allow update: if isAdmin() &&
         isValidId(guardUid) &&
         isValidGuardRole(incoming()) &&
@@ -279,6 +328,7 @@ service cloud.firestore {
         isAdmin() ||
         (isVerifiedUser() && (
           existing().uid == request.auth.uid ||
+          existing().primaryHostUid == request.auth.uid ||
           existing().email == request.auth.token.email ||
           (request.auth.token.email is string && existing().email == request.auth.token.email.lower())
         ))
@@ -286,21 +336,52 @@ service cloud.firestore {
       allow list: if isAdmin() || (
         isVerifiedUser() && (
           resource.data.uid == request.auth.uid ||
+          resource.data.primaryHostUid == request.auth.uid ||
           resource.data.email == request.auth.token.email ||
           (request.auth.token.email is string && resource.data.email == request.auth.token.email.lower())
         )
       );
-      allow create: if isAdmin() &&
-        isValidId(entryId) &&
+      allow create: if isValidId(entryId) &&
         isValidDirectoryEntry(incoming()) &&
         incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time;
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            isVerifiedUser() &&
+            incoming().zone == 'RESIDENTIAL' &&
+            incoming().isFamilyMember == true &&
+            !('uid' in incoming()) &&
+            incoming().primaryHostUid == request.auth.uid &&
+            'primaryHostDirectoryId' in incoming() &&
+            isValidId(incoming().primaryHostDirectoryId) &&
+            exists(/databases/$(database)/documents/directory/$(incoming().primaryHostDirectoryId)) &&
+            get(/databases/$(database)/documents/directory/$(incoming().primaryHostDirectoryId)).data.uid == request.auth.uid &&
+            get(/databases/$(database)/documents/directory/$(incoming().primaryHostDirectoryId)).data.zone == 'RESIDENTIAL' &&
+            get(/databases/$(database)/documents/directory/$(incoming().primaryHostDirectoryId)).data.unit == incoming().unit &&
+            get(/databases/$(database)/documents/directory/$(incoming().primaryHostDirectoryId)).data.isFamilyMember != true
+          )
+        );
       allow update: if isVerifiedUser() &&
         isValidId(entryId) &&
         isValidDirectoryEntry(incoming()) &&
         incoming().createdAt == existing().createdAt &&
         incoming().updatedAt == request.time && (
           isAdmin() ||
+          (
+            existing().zone in ['GUARD', 'OFFICE', 'RESIDENTIAL'] &&
+            'claimHash' in existing() &&
+            existing().claimHash is string &&
+            'claimProof' in incoming() &&
+            incoming().claimProof is string &&
+            incoming().claimProof == existing().claimHash + '_' + request.auth.uid &&
+            incoming().uid == request.auth.uid &&
+            incoming().zone == existing().zone &&
+            incoming().unit == existing().unit &&
+            incoming().name == existing().name &&
+            incoming().phone == existing().phone &&
+            incoming().pin == existing().pin &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['uid', 'claimProof', 'updatedAt'])
+          ) ||
           (
             (
               existing().uid == request.auth.uid ||
@@ -313,11 +394,88 @@ service cloud.firestore {
             incoming().name == existing().name &&
             incoming().phone == existing().phone &&
             incoming().diff(existing()).affectedKeys().hasOnly([
-              'pin', 'pinMustChange', 'pinResetRequested', 'uid', 'updatedAt'
+              'pin', 'claimHash', 'phoneHash', 'pinMustChange', 'pinResetRequested', 'uid', 'updatedAt'
             ])
           )
         );
-      allow delete: if isAdmin() && isValidId(entryId) && existing().zone != 'SUPERADMIN';
+      allow delete: if isValidId(entryId) && (
+        (isAdmin() && existing().zone != 'SUPERADMIN') ||
+        (isVerifiedUser() && existing().isFamilyMember == true && existing().primaryHostUid == request.auth.uid)
+      );
+    }
+
+    // 4b. Hashed Mobile + PIN Credentials Collection
+    match /pinCredentials/{credHash} {
+      allow get: if isVerifiedUser() && isValidId(credHash);
+      allow list: if isAdmin();
+      allow create: if isVerifiedUser() &&
+        isValidId(credHash) &&
+        isValidPinCredential(incoming()) &&
+        incoming().credHash == credHash &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            incoming().role in ['guard', 'host'] &&
+            isValidId(incoming().directoryIds[0]) &&
+            exists(/databases/$(database)/documents/directory/$(incoming().directoryIds[0])) &&
+            (
+              get(/databases/$(database)/documents/directory/$(incoming().directoryIds[0])).data.uid == request.auth.uid ||
+              get(/databases/$(database)/documents/directory/$(incoming().directoryIds[0])).data.primaryHostUid == request.auth.uid
+            )
+          )
+        );
+      allow update: if isAdmin() &&
+        isValidId(credHash) &&
+        isValidPinCredential(incoming()) &&
+        incoming().credHash == existing().credHash &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'phone', 'phoneHash', 'role', 'name', 'directoryIds', 'pinMustChange', 'updatedAt'
+        ]);
+      allow delete: if isValidId(credHash) && (
+        isAdmin() ||
+        (
+          isVerifiedUser() &&
+          existing().directoryIds.size() > 0 &&
+          isValidId(existing().directoryIds[0]) &&
+          exists(/databases/$(database)/documents/directory/$(existing().directoryIds[0])) &&
+          (
+            get(/databases/$(database)/documents/directory/$(existing().directoryIds[0])).data.uid == request.auth.uid ||
+            get(/databases/$(database)/documents/directory/$(existing().directoryIds[0])).data.primaryHostUid == request.auth.uid
+          )
+        )
+      );
+    }
+
+    // 4c. Hashed Mobile PIN Reset Requests Collection
+    match /pinResetRequests/{phoneHash} {
+      allow get: if isValidId(phoneHash) && (
+        isAdmin() ||
+        (isVerifiedUser() && existing().requestedByUid == request.auth.uid)
+      );
+      allow list: if isAdmin();
+      allow create: if isVerifiedUser() &&
+        isValidId(phoneHash) &&
+        isValidPinResetRequest(incoming()) &&
+        incoming().phoneHash == phoneHash &&
+        incoming().requestedByUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser() &&
+        isValidId(phoneHash) &&
+        isValidPinResetRequest(incoming()) &&
+        incoming().phoneHash == existing().phoneHash &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          isAdmin() ||
+          (
+            incoming().requestedByUid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['requestedByUid', 'updatedAt'])
+          )
+        );
+      allow delete: if isAdmin() && isValidId(phoneHash);
     }
 
     // 5. Public Campus Destinations (Non-PII Split Collection)
@@ -325,21 +483,45 @@ service cloud.firestore {
       allow get: if isValidId(destId) && (
         isAdmin() ||
         isGuard() ||
-        (isVerifiedUser() && existing().hostUid == request.auth.uid)
+        (isVerifiedUser() && (existing().hostUid == request.auth.uid || existing().primaryHostUid == request.auth.uid))
       );
       allow list: if isAdmin() ||
         isGuard() ||
-        (isVerifiedUser() && resource.data.hostUid == request.auth.uid);
-      allow create: if isAdmin() &&
-        isValidId(destId) &&
+        (isVerifiedUser() && (resource.data.hostUid == request.auth.uid || resource.data.primaryHostUid == request.auth.uid));
+      allow create: if isValidId(destId) &&
         isValidDestination(incoming()) &&
-        incoming().createdAt == request.time;
-      allow update: if isAdmin() &&
-        isValidId(destId) &&
+        incoming().createdAt == request.time && (
+          isAdmin() ||
+          (
+            isVerifiedUser() &&
+            incoming().zone == 'RESIDENTIAL' &&
+            incoming().primaryHostUid == request.auth.uid &&
+            isValidId(destId.replace('^dest_', '')) &&
+            existsAfter(/databases/$(database)/documents/directory/$(destId.replace('^dest_', ''))) &&
+            getAfter(/databases/$(database)/documents/directory/$(destId.replace('^dest_', ''))).data.primaryHostUid == request.auth.uid &&
+            getAfter(/databases/$(database)/documents/directory/$(destId.replace('^dest_', ''))).data.isFamilyMember == true
+          )
+        );
+      allow update: if isValidId(destId) &&
         isValidDestination(incoming()) &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['zone', 'unit', 'hostName', 'label', 'hostUid']);
-      allow delete: if isAdmin() && isValidId(destId);
+        incoming().createdAt == existing().createdAt && (
+          (
+            isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['zone', 'unit', 'hostName', 'label', 'hostUid', 'primaryHostUid'])
+          ) ||
+          (
+            isVerifiedUser() &&
+            isValidId(destId.replace('^dest_', '')) &&
+            exists(/databases/$(database)/documents/directory/$(destId.replace('^dest_', ''))) &&
+            get(/databases/$(database)/documents/directory/$(destId.replace('^dest_', ''))).data.uid == request.auth.uid &&
+            incoming().hostUid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['hostUid'])
+          )
+        );
+      allow delete: if isValidId(destId) && (
+        isAdmin() ||
+        (isVerifiedUser() && existing().primaryHostUid == request.auth.uid)
+      );
     }
 
     // 6. Housing Units Collection (Non-PII)
@@ -365,14 +547,16 @@ service cloud.firestore {
         isGuard() ||
         (isVerifiedUser() && (
           existing().hostUid == request.auth.uid ||
-          existing().createdByUid == request.auth.uid
+          existing().createdByUid == request.auth.uid ||
+          ('hostUids' in existing() && request.auth.uid in existing().hostUids)
         ))
       );
       allow list: if isAdmin() ||
         isGuard() ||
         (isVerifiedUser() && (
           resource.data.hostUid == request.auth.uid ||
-          resource.data.createdByUid == request.auth.uid
+          resource.data.createdByUid == request.auth.uid ||
+          ('hostUids' in resource.data && request.auth.uid in resource.data.hostUids)
         ));
       allow create: if isVerifiedUser() &&
         isValidId(visitorId) &&
@@ -397,7 +581,11 @@ service cloud.firestore {
             incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
           ) ||
           (
-            (existing().hostUid == request.auth.uid || existing().createdByUid == request.auth.uid) &&
+            (
+              existing().hostUid == request.auth.uid ||
+              existing().createdByUid == request.auth.uid ||
+              ('hostUids' in existing() && request.auth.uid in existing().hostUids)
+            ) &&
             existing().status == 'PENDING' &&
             incoming().status in ['APPROVED', 'DENIED'] &&
             incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])

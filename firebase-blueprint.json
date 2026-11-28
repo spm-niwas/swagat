@@ -33,6 +33,7 @@
         "email": { "type": "string", "minLength": 3, "maxLength": 120 },
         "name": { "type": "string", "minLength": 1, "maxLength": 100 },
         "gateUnit": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "claimProof": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["uid", "email", "name", "gateUnit", "createdAt"]
@@ -64,6 +65,11 @@
         "uid": { "type": "string", "maxLength": 128 },
         "phone": { "type": "string", "maxLength": 120 },
         "pin": { "type": "string", "maxLength": 4 },
+        "claimHash": { "type": "string", "maxLength": 128 },
+        "phoneHash": { "type": "string", "maxLength": 128 },
+        "claimProof": { "type": "string", "maxLength": 200 },
+        "primaryHostUid": { "type": "string", "maxLength": 128 },
+        "primaryHostDirectoryId": { "type": "string", "maxLength": 128 },
         "pinMustChange": { "type": "boolean" },
         "pinResetRequested": { "type": "boolean" },
         "isFamilyMember": { "type": "boolean" },
@@ -72,6 +78,35 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["zone", "unit", "name", "pinMustChange", "pinResetRequested", "createdAt", "updatedAt"]
+    },
+    "PinCredential": {
+      "title": "Hashed Mobile + PIN Credential",
+      "description": "Keyed by SHA-256 of Mobile + PIN so verified Google users can authenticate and claim their Guard/Host directory records.",
+      "type": "object",
+      "properties": {
+        "credHash": { "type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[a-f0-9]{64}$" },
+        "phone": { "type": "string", "minLength": 10, "maxLength": 10, "pattern": "^[6-9][0-9]{9}$" },
+        "phoneHash": { "type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[a-f0-9]{64}$" },
+        "role": { "type": "string", "enum": ["guard", "host"] },
+        "name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "directoryIds": { "type": "array" },
+        "pinMustChange": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["credHash", "phone", "phoneHash", "role", "name", "directoryIds", "pinMustChange", "createdAt", "updatedAt"]
+    },
+    "PinResetRequest": {
+      "title": "PIN Reset Request",
+      "description": "Keyed by SHA-256 of Mobile so hosts or guards who forgot their PIN can notify Campus Admins without exposing PII.",
+      "type": "object",
+      "properties": {
+        "phoneHash": { "type": "string", "minLength": 64, "maxLength": 64, "pattern": "^[a-f0-9]{64}$" },
+        "requestedByUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["phoneHash", "requestedByUid", "createdAt", "updatedAt"]
     },
     "DestinationLabel": {
       "title": "Public Campus Destination",
@@ -83,6 +118,7 @@
         "hostName": { "type": "string", "minLength": 1, "maxLength": 100 },
         "label": { "type": "string", "minLength": 1, "maxLength": 210 },
         "hostUid": { "type": "string", "maxLength": 128 },
+        "primaryHostUid": { "type": "string", "maxLength": 128 },
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["zone", "unit", "hostName", "label", "createdAt"]
@@ -109,6 +145,7 @@
         "destination": { "type": "string", "minLength": 1, "maxLength": 200 },
         "hostPhone": { "type": "string", "maxLength": 30 },
         "hostUid": { "type": "string", "maxLength": 128 },
+        "hostUids": { "type": "array" },
         "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "vehicleNumber": { "type": "string", "maxLength": 30 },
         "passCode": { "type": "string", "minLength": 4, "maxLength": 8 },
@@ -154,6 +191,14 @@
     "/directory/{entryId}": {
       "schema": { "$ref": "#/entities/DirectoryEntry" },
       "description": "Protected campus staff, guard, and resident directory entries."
+    },
+    "/pinCredentials/{credHash}": {
+      "schema": { "$ref": "#/entities/PinCredential" },
+      "description": "Hashed Mobile + PIN credential documents enabling verified Google users to claim their Host or Guard records."
+    },
+    "/pinResetRequests/{phoneHash}": {
+      "schema": { "$ref": "#/entities/PinResetRequest" },
+      "description": "Hashed Mobile PIN reset requests queued for Campus Admin review."
     },
     "/destinations/{destId}": {
       "schema": { "$ref": "#/entities/DestinationLabel" },

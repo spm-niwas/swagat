@@ -15,9 +15,11 @@ import type { AccessZone, DirectoryEntry, VisitorRecord, VisitorStatus } from '.
 import {
   buildCategoryOptions,
   displayIndianMobile,
+  formatDirectoryLabel,
   formatTime,
   formatTitleCaseValue,
   getZoneDirectoryLabels,
+  isSameUnit,
   isValidIndianMobile,
   normalizeIndianMobile,
 } from '../utils/formatters';
@@ -160,6 +162,15 @@ export const GuardView: React.FC<GuardViewProps> = ({
 
     setSubmitting(true);
     try {
+      const matchedEntries = directory.filter(
+        (d) => d.zone === selectedZone && isSameUnit(d.unit, destination)
+      );
+      const exactMatch =
+        matchedEntries.find((d) => formatDirectoryLabel(d) === destination) || matchedEntries[0];
+      const hostUids = Array.from(
+        new Set(matchedEntries.map((d) => d.uid).filter((u): u is string => Boolean(u)))
+      );
+
       const now = Date.now();
       await onCreateVisitor({
         visitorName: name,
@@ -167,6 +178,9 @@ export const GuardView: React.FC<GuardViewProps> = ({
         visitorType,
         zone: selectedZone,
         destination,
+        hostPhone: exactMatch?.phone || '',
+        hostUid: exactMatch?.uid || hostUids[0] || '',
+        hostUids,
         vehicleNumber: visitorVehicle.trim().toUpperCase(),
         passCode: String(Math.floor(1000 + Math.random() * 9000)),
         status: 'PENDING',

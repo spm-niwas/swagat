@@ -15,6 +15,10 @@ export interface DirectoryEntry {
   uid?: string;
   phone: string;
   pin: string;
+  claimHash?: string;
+  phoneHash?: string;
+  primaryHostUid?: string;
+  primaryHostDirectoryId?: string;
   pinMustChange: boolean;
   pinResetRequested: boolean;
   isFamilyMember?: boolean;
@@ -30,6 +34,7 @@ export interface VisitorRecord {
   destination: string;
   hostPhone?: string;
   hostUid?: string;
+  hostUids?: string[];
   createdByUid?: string;
   vehicleNumber: string;
   passCode: string;
@@ -71,6 +76,7 @@ export interface AppStatePayload {
   housingUnits: string[];
   geofence: GeofenceConfig;
   branding: BrandingConfig;
+  pinResetPhoneHashes?: string[];
 }
 
 export interface ConfirmDialogConfig {

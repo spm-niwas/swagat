@@ -51,14 +51,17 @@ import {
   fsDeleteDirectoryByPhone,
   fsDeleteDirectoryEntry,
   fsDeleteHousingUnit,
+  fsSubmitPinResetRequest,
   fsUpdateCampusSettings,
   fsUpdateDirectoryEntry,
   fsUpdateUserPinByPhone,
   fsUpdateVisitorStatus,
+  fsVerifyAndClaimPinLogin,
   seedInitialFirestoreIfNeeded,
   signInWithGoogleFirebase,
   signOutFirebase,
   subscribeFirestoreCampusState,
+  syncMissingPinCredentialsIfNeeded,
 } from './services/firestoreSync';
 import { HeaderBar } from './components/HeaderBar';
 import { LoginView } from './components/LoginView';
@@ -73,13 +76,44 @@ import {
   ForcePinModal,
   ForgotPinModal,
   GuardGpsModal,
+  MobilePinGoogleModal,
   PassModal,
   SettingsModal,
   ShareCredentialsModal,
 } from './components/Modals';
 
 const SESSION_STORAGE_KEY = 'swagat_session_v1';
+const PENDING_PIN_AUTH_KEY = 'swagat_pending_pin_auth_v1';
 const PIN_SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+interface PendingPinAuth {
+  mode: 'login' | 'forgot';
+  phone: string;
+  pin: string;
+}
+
+function readStoredPinSession(): UserSession | null {
+  try {
+    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as UserSession;
+    if (parsed.role === 'superadmin' || parsed.role === 'admin') {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+      return null;
+    }
+    if (typeof parsed.expiresAt !== 'number' || Date.now() >= parsed.expiresAt) {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+      return null;
+    }
+    if ((parsed.role === 'guard' || parsed.role === 'host') && !isMobileDevice()) {
+      localStorage.removeItem(SESSION_STORAGE_KEY);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
 
 const isDevConsole =
   import.meta.env.DEV ||
@@ -92,6 +126,7 @@ export default function App() {
   const [visitors, setVisitors] = useState<VisitorRecord[]>([]);
   const [directory, setDirectory] = useState<DirectoryEntry[]>([]);
   const [housingUnits, setHousingUnits] = useState<string[]>([]);
+  const [pinResetPhoneHashes, setPinResetPhoneHashes] = useState<string[]>([]);
   const [geofence, setGeofence] = useState<GeofenceConfig>({
     enabled: false,
     lat: null,
@@ -106,28 +141,7 @@ export default function App() {
 
   const [isMobile, setIsMobile] = useState<boolean>(() => isMobileDevice());
   const [devPreviewOverride, setDevPreviewOverride] = useState(false);
-  const [session, setSession] = useState<UserSession | null>(() => {
-    try {
-      const raw = localStorage.getItem(SESSION_STORAGE_KEY);
-      if (!raw) return null;
-      const parsed = JSON.parse(raw) as UserSession;
-      if (parsed.role === 'superadmin' || parsed.role === 'admin') {
-        localStorage.removeItem(SESSION_STORAGE_KEY);
-        return null;
-      }
-      if (typeof parsed.expiresAt !== 'number' || Date.now() >= parsed.expiresAt) {
-        localStorage.removeItem(SESSION_STORAGE_KEY);
-        return null;
-      }
-      if ((parsed.role === 'guard' || parsed.role === 'host') && !isMobileDevice()) {
-        localStorage.removeItem(SESSION_STORAGE_KEY);
-        return null;
-      }
-      return parsed;
-    } catch {
-      return null;
-    }
-  });
+  const [session, setSession] = useState<UserSession | null>(() => readStoredPinSession());
   const [currentRole, setCurrentRole] = useState<RoleType>(() => session?.role || 'guard');
 
   useEffect(() => {
@@ -170,6 +184,14 @@ export default function App() {
   const [forcePinOpen, setForcePinOpen] = useState(false);
   const [forgotPinOpen, setForgotPinOpen] = useState(false);
   const [adminLoginOpen, setAdminLoginOpen] = useState(false);
+  const [mobilePinAuthModal, setMobilePinAuthModal] = useState<{
+    open: boolean;
+    mode: 'login' | 'forgot';
+    phone: string;
+    pin: string;
+  }>({ open: false, mode: 'login', phone: '', pin: '' });
+  const pendingPinAuthRef = useRef<PendingPinAuth | null>(null);
+  const fsUnsubRef = useRef<(() => void) | null>(null);
   const [confirmConfig, setConfirmConfig] = useState<ConfirmDialogConfig | null>(null);
   const [sharePayload, setSharePayload] = useState<{
     name: string;
@@ -190,21 +212,118 @@ export default function App() {
     if (Array.isArray(data.visitors)) setVisitors(data.visitors);
     if (Array.isArray(data.directory)) setDirectory(data.directory);
     if (Array.isArray(data.housingUnits)) setHousingUnits(data.housingUnits);
+    if (Array.isArray(data.pinResetPhoneHashes)) setPinResetPhoneHashes(data.pinResetPhoneHashes);
     if (data.geofence) setGeofence(data.geofence);
     if (data.branding) setLogoDataUrl(data.branding.logoDataUrl || '');
     setLoading(false);
   }, []);
 
+  const recordPinFailure = useCallback(() => {
+    setFailedAttempts((prev) => {
+      const nextFails = prev + 1;
+      const left = Math.max(0, 5 - nextFails);
+      if (nextFails >= 5) {
+        setLockUntil(Date.now() + 60000);
+        setAttemptHint('Locked 60s');
+        showToast('Locked for 60s after 5 wrong PIN attempts.');
+        return 0;
+      }
+      setAttemptHint(`${left} tries left`);
+      showToast(`Invalid Mobile or PIN (${left} tries left).`);
+      return nextFails;
+    });
+  }, [showToast]);
+
+  const completeCloudPinLogin = useCallback(
+    async (user: User, phone: string, pin: string): Promise<boolean> => {
+      if (Date.now() < lockUntil) {
+        const secs = Math.ceil((lockUntil - Date.now()) / 1000);
+        showToast(`Too many attempts. Try again in ${secs}s.`);
+        return false;
+      }
+
+      const result = await fsVerifyAndClaimPinLogin(user, phone, pin);
+      if (!result) {
+        recordPinFailure();
+        return false;
+      }
+
+      if (!isMobileDevice()) {
+        setAttemptHint('Mobile device required for Guard & Host');
+        showToast('Guard and Host portals can only be opened on a mobile device.');
+        return false;
+      }
+
+      setFailedAttempts(0);
+      setAttemptHint('');
+      setDevPreviewOverride(false);
+
+      const allowedUnits = result.directoryEntries
+        .filter((m) => m.zone === 'OFFICE' || m.zone === 'RESIDENTIAL')
+        .map(formatDirectoryLabel);
+
+      const now = Date.now();
+      const newSession: UserSession = {
+        name: result.name,
+        phone: result.phone,
+        email: user.email || '',
+        role: result.role,
+        allowedUnits,
+        loggedInAt: now,
+        expiresAt: now + PIN_SESSION_DURATION_MS,
+      };
+
+      if (fsUnsubRef.current) {
+        fsUnsubRef.current();
+        fsUnsubRef.current = null;
+      }
+      fsUnsubRef.current = subscribeFirestoreCampusState(
+        user,
+        {
+          authorized: true,
+          role: result.role,
+          isAdmin: false,
+          isGuard: result.role === 'guard',
+          name: result.name,
+          email: user.email || '',
+          phone: result.phone,
+          allowedUnits,
+        },
+        (partial) => applyServerState(partial)
+      );
+
+      setDirectory((prev) => {
+        const merged = new Map(prev.map((d) => [d.id, d]));
+        for (const d of result.directoryEntries) merged.set(d.id, d);
+        return Array.from(merged.values());
+      });
+      setSession(newSession);
+      setCurrentRole(result.role);
+      try {
+        localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(newSession));
+      } catch {
+        // ignore
+      }
+
+      if (result.pinMustChange) {
+        setForcePinOpen(true);
+      } else {
+        showToast(`Welcome, ${result.name}!`);
+      }
+      return true;
+    },
+    [applyServerState, lockUntil, recordPinFailure, showToast]
+  );
+
   // Track Firebase Auth + attach Cloud Firestore listeners when authenticated; fallback to local Express API otherwise
   useEffect(() => {
     let active = true;
-    let fsUnsub: (() => void) | null = null;
     let sseUnsub: (() => void) | null = null;
 
     const cleanupSubs = () => {
-      if (fsUnsub) {
-        fsUnsub();
-        fsUnsub = null;
+      if (fsUnsubRef.current) {
+        fsUnsubRef.current();
+        fsUnsubRef.current = null;
       }
       if (sseUnsub) {
         sseUnsub();
@@ -216,7 +335,11 @@ export default function App() {
       if (active) {
         const msg = formatFirebaseAuthError(err);
         setAuthError(msg);
-        setAdminLoginOpen(true);
+        if (pendingPinAuthRef.current || sessionStorage.getItem(PENDING_PIN_AUTH_KEY)) {
+          setMobilePinAuthModal((prev) => ({ ...prev, open: true }));
+        } else {
+          setAdminLoginOpen(true);
+        }
         showToast(msg);
       }
     });
@@ -228,6 +351,77 @@ export default function App() {
 
       if (user) {
         setAuthError(null);
+        let pendingPin = pendingPinAuthRef.current;
+        if (!pendingPin) {
+          try {
+            const rawPending = sessionStorage.getItem(PENDING_PIN_AUTH_KEY);
+            if (rawPending) pendingPin = JSON.parse(rawPending) as PendingPinAuth;
+          } catch {
+            pendingPin = null;
+          }
+        }
+        pendingPinAuthRef.current = null;
+        try {
+          sessionStorage.removeItem(PENDING_PIN_AUTH_KEY);
+        } catch {
+          // ignore
+        }
+
+        if (pendingPin) {
+          setMobilePinAuthModal({ open: false, mode: 'login', phone: '', pin: '' });
+          try {
+            if (pendingPin.mode === 'forgot') {
+              await fsSubmitPinResetRequest(user, pendingPin.phone);
+              if (!active) return;
+              setForgotPinOpen(false);
+              setLoading(false);
+              showToast('PIN reset request sent to SPM NIWAS Admin!');
+              return;
+            }
+            const ok = await completeCloudPinLogin(user, pendingPin.phone, pendingPin.pin);
+            if (!active) return;
+            if (!ok) {
+              setLoading(false);
+            }
+            return;
+          } catch (err) {
+            if (active) {
+              setLoading(false);
+              const msg = formatFirebaseAuthError(err);
+              setAuthError(msg);
+              showToast(msg);
+            }
+            return;
+          }
+        }
+
+        const storedPinSession = readStoredPinSession();
+        if (
+          storedPinSession &&
+          (storedPinSession.role === 'host' || storedPinSession.role === 'guard')
+        ) {
+          fsUnsubRef.current = subscribeFirestoreCampusState(
+            user,
+            {
+              authorized: true,
+              role: storedPinSession.role,
+              isAdmin: false,
+              isGuard: storedPinSession.role === 'guard',
+              name: storedPinSession.name,
+              email: user.email || '',
+              phone: storedPinSession.phone,
+              allowedUnits: storedPinSession.allowedUnits,
+            },
+            (partial) => {
+              if (active) applyServerState(partial);
+            }
+          );
+          setSession(storedPinSession);
+          setCurrentRole(storedPinSession.role);
+          setLoading(false);
+          return;
+        }
+
         try {
           const resolved = await ensureAndResolveFirebaseUser(user);
           if (!active) return;
@@ -247,7 +441,10 @@ export default function App() {
             await seedInitialFirestoreIfNeeded(user);
             if (!active) return;
           }
-          fsUnsub = subscribeFirestoreCampusState(user, resolved, (partial) => {
+          await syncMissingPinCredentialsIfNeeded();
+          if (!active) return;
+
+          fsUnsubRef.current = subscribeFirestoreCampusState(user, resolved, (partial) => {
             if (active) applyServerState(partial);
           });
 
@@ -290,7 +487,7 @@ export default function App() {
       authUnsub();
       cleanupSubs();
     };
-  }, [applyServerState, showToast]);
+  }, [applyServerState, completeCloudPinLogin, showToast]);
 
   // Keep session allowedUnits synced if directory updates (e.g. residence allotted/vacated)
   useEffect(() => {
@@ -595,6 +792,12 @@ export default function App() {
   const handleGoogleLogin = async () => {
     setAuthError(null);
     setGoogleLoading(true);
+    pendingPinAuthRef.current = null;
+    try {
+      sessionStorage.removeItem(PENDING_PIN_AUTH_KEY);
+    } catch {
+      // ignore
+    }
     try {
       const user = await signInWithGoogleFirebase();
       if (user) {
@@ -603,6 +806,40 @@ export default function App() {
         showToast('Redirecting to Google Sign-In...');
       }
     } catch (err) {
+      const msg = formatFirebaseAuthError(err);
+      setAuthError(msg);
+      showToast(msg);
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
+
+  const handleMobilePinGoogleLogin = async () => {
+    setAuthError(null);
+    setGoogleLoading(true);
+    const pending: PendingPinAuth = {
+      mode: mobilePinAuthModal.mode,
+      phone: mobilePinAuthModal.phone,
+      pin: mobilePinAuthModal.pin,
+    };
+    pendingPinAuthRef.current = pending;
+    try {
+      sessionStorage.setItem(PENDING_PIN_AUTH_KEY, JSON.stringify(pending));
+    } catch {
+      // ignore
+    }
+    try {
+      const user = await signInWithGoogleFirebase();
+      if (!user) {
+        showToast('Redirecting to Google Sign-In...');
+      }
+    } catch (err) {
+      pendingPinAuthRef.current = null;
+      try {
+        sessionStorage.removeItem(PENDING_PIN_AUTH_KEY);
+      } catch {
+        // ignore
+      }
       const msg = formatFirebaseAuthError(err);
       setAuthError(msg);
       showToast(msg);
@@ -629,16 +866,45 @@ export default function App() {
     }
   };
 
-  const handlePinLogin = (phone: string, pin: string) => {
+  const handlePinLogin = async (phone: string, pin: string) => {
     if (!phone || phone.length !== 10 || pin.length !== 4) {
       showToast('Enter a valid 10-digit Mobile (starting with 6–9) & 4-digit PIN.');
       return;
     }
-    if (!firebaseUser && directory.length === 0) {
-      showToast('Swagat Cloud is not synced yet. Use Admin Google Sign-In first on this device.');
+    if (Date.now() < lockUntil) {
+      const secs = Math.ceil((lockUntil - Date.now()) / 1000);
+      showToast(`Too many attempts. Try again in ${secs}s.`);
       return;
     }
-    authenticateIdentifier(phone, pin);
+
+    if (firebaseUser) {
+      try {
+        await completeCloudPinLogin(firebaseUser, phone, pin);
+      } catch (err) {
+        showToast(formatFirebaseAuthError(err));
+      }
+      return;
+    }
+
+    const hasLocalMatch = directory.some(
+      (d) =>
+        d.zone !== 'SUPERADMIN' &&
+        d.zone !== 'ADMIN' &&
+        normalizeIndianMobile(d.phone) === phone &&
+        d.pin === pin
+    );
+    if (hasLocalMatch) {
+      authenticateIdentifier(phone, pin);
+      return;
+    }
+
+    setAuthError(null);
+    setMobilePinAuthModal({
+      open: true,
+      mode: 'login',
+      phone,
+      pin,
+    });
   };
 
   const handleSwitchRole = (role: RoleType) => {
@@ -794,7 +1060,9 @@ export default function App() {
     extra: { pinMustChange?: boolean; pinResetRequested?: boolean } = {}
   ) =>
     isCloudMode
-      ? fsUpdateUserPinByPhone(phone, pin, extra)
+      ? fsUpdateUserPinByPhone(phone, pin, extra, {
+          isAdmin: session?.role === 'admin' || session?.role === 'superadmin',
+        })
       : updateUserPinByPhoneApi(phone, pin, extra);
 
   const saveDeleteDirectoryEntry = async (id: string) => {
@@ -918,20 +1186,32 @@ export default function App() {
       return;
     }
     try {
-      if (isCloudMode) {
-        const target = directory.find(
-          (d) =>
-            d.zone !== 'SUPERADMIN' &&
-            d.zone !== 'ADMIN' &&
-            normalizeIndianMobile(d.phone) === phone
-        );
-        if (!target) throw new Error('Mobile not found in SPM NIWAS directory.');
-        await fsUpdateDirectoryEntry(target.id, { pinResetRequested: true });
-      } else {
+      if (firebaseUser) {
+        await fsSubmitPinResetRequest(firebaseUser, phone);
+        setForgotPinOpen(false);
+        showToast('PIN reset request sent to SPM NIWAS Admin!');
+        return;
+      }
+      const inLocalDir = directory.some(
+        (d) =>
+          d.zone !== 'SUPERADMIN' &&
+          d.zone !== 'ADMIN' &&
+          normalizeIndianMobile(d.phone) === phone
+      );
+      if (inLocalDir) {
         await requestPinResetApi(phone);
+        setForgotPinOpen(false);
+        showToast('PIN reset request sent to SPM NIWAS Admin!');
+        return;
       }
       setForgotPinOpen(false);
-      showToast('PIN reset request sent to SPM NIWAS Admin!');
+      setAuthError(null);
+      setMobilePinAuthModal({
+        open: true,
+        mode: 'forgot',
+        phone,
+        pin: '',
+      });
     } catch (err) {
       showToast(err instanceof Error ? err.message : 'Mobile not found.');
     }
@@ -1076,7 +1356,22 @@ export default function App() {
                       showToast(st === 'APPROVED' ? 'Entry Approved!' : 'Entry Denied.');
                     }}
                     onAddFamilyMember={async (entry) => {
-                      await saveCreateDirectoryEntries([entry]);
+                      const primaryRec = firebaseUser
+                        ? directory.find(
+                            (d) =>
+                              d.zone === 'RESIDENTIAL' &&
+                              !d.isFamilyMember &&
+                              d.uid === firebaseUser.uid &&
+                              d.unit.toLowerCase() === entry.unit.toLowerCase()
+                          )
+                        : undefined;
+                      await saveCreateDirectoryEntries([
+                        {
+                          ...entry,
+                          ...(firebaseUser ? { primaryHostUid: firebaseUser.uid } : {}),
+                          ...(primaryRec ? { primaryHostDirectoryId: primaryRec.id } : {}),
+                        },
+                      ]);
                     }}
                     onDeleteDirectoryEntry={async (id) => {
                       await saveDeleteDirectoryEntry(id);
@@ -1096,6 +1391,7 @@ export default function App() {
                 visitors={visitors}
                 directory={directory}
                 housingUnits={housingUnits}
+                pinResetPhoneHashes={pinResetPhoneHashes}
                 onAddDirectoryEntries={async (entries) => {
                   const resUnits = entries
                     .filter((e) => e.zone === 'RESIDENTIAL' && e.unit.trim())
@@ -1195,6 +1491,19 @@ export default function App() {
         onGoogleLogin={handleGoogleLogin}
         onSwitchGoogleAccount={handleSwitchGoogleAccount}
         onClose={() => setAdminLoginOpen(false)}
+      />
+
+      <MobilePinGoogleModal
+        open={mobilePinAuthModal.open}
+        mode={mobilePinAuthModal.mode}
+        phone={mobilePinAuthModal.phone}
+        googleLoading={googleLoading}
+        authError={authError}
+        onGoogleLogin={handleMobilePinGoogleLogin}
+        onClose={() => {
+          pendingPinAuthRef.current = null;
+          setMobilePinAuthModal({ open: false, mode: 'login', phone: '', pin: '' });
+        }}
       />
 
       <ConfirmActionModal config={confirmConfig} onClose={() => setConfirmConfig(null)} />
